@@ -67,6 +67,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 + (id)allocWithZone:(NSZonePtr)_zone {
     let host_object = Box::new(UIImageHostObject {
         cg_image: nil,
+        scale: 1.0,
         orientation: 0, // UIImageOrientationUp
         left_cap_width: 0,
         top_cap_height: 0,
@@ -139,6 +140,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 // iOS 4.0+
 + (id)imageWithCGImage:(CGImageRef)cg_image scale:(CGFloat)scale orientation:(NSInteger)orientation {
+    let new: id = msg![env; this alloc];
     let new: id = msg![env; new initWithCGImage:cg_image scale:scale orientation:orientation];
     autorelease(env, new)
 }

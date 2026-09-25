@@ -14,6 +14,7 @@
 //! - <https://developer.apple.com/documentation/uikit/uipinchgesturerecognizer>
 
 use super::ui_gesture_recognizer::UIGestureRecognizerHostObject;
+use crate::frameworks::core_graphics::CGFloat;
 use crate::objc::{id, impl_HostObject_with_superclass, objc_classes, ClassExports, NSZonePtr};
 
 // MARK: - UIPinchGestureRecognizer host object
