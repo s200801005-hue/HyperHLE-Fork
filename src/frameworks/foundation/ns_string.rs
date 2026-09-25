@@ -1732,6 +1732,18 @@ pub const CLASSES: ClassExports = objc_classes! {
     (sign * magnitude).clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
+- (i64)longLongValue {
+    let st = to_rust_string(env, this);
+    let st = st.trim_start_matches(|c: char| c.is_ascii_whitespace());
+    let (sign, rest) = match st.strip_prefix('-') {
+        Some(r) => (-1i128, r),
+        None    => (1i128, st.strip_prefix('+').unwrap_or(st)),
+    };
+    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+    let magnitude: i128 = digits.parse().unwrap_or(0);
+    (sign * magnitude).clamp(i64::MIN as i128, i64::MAX as i128) as i64
+}
+
 - (id)lowercaseString {
     let str = to_rust_string(env, this).to_lowercase();
     let res = from_rust_string(env, str);
@@ -2155,6 +2167,13 @@ pub const CLASSES: ClassExports = objc_classes! {
     assert!(!characters.is_null());
     let num_bytes = len * 2;
     msg![env; this initWithBytes:(characters.cast::<u8>()) length:num_bytes encoding:NSUTF16StringEncoding]
+}
+
+// NoCopy semantics are ignored: the buffer is owned by the caller, so — as
+// with `initWithBytesNoCopy:...freeWhenDone:` above — we take a copy, which is
+// always safe (the buffer remains valid and is never freed by us).
+- (id)initWithCharactersNoCopy:(ConstPtr<unichar>)characters length:(NSUInteger)len freeWhenDone:(bool)_free {
+    msg![env; this initWithCharacters:characters length:len]
 }
 
 - (id)initWithString:(id)string {

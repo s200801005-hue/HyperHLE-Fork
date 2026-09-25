@@ -172,7 +172,7 @@ fn access(env: &mut Environment, path: ConstPtr<u8>, mode: i32) -> i32 {
         // POSIX access() accepts any combination of F_OK/R_OK/W_OK/X_OK;
         // reject unknown mode bits with EINVAL.
         let valid_mode_bits = F_OK | R_OK | W_OK | X_OK;
-        if mode & !valid_mode_bits != mode || mode == 0 {
+        if (mode & !valid_mode_bits) != 0 || mode == 0 {
             // Unknown mode bits: real access() returns -1 with EINVAL.
             log!(
                 "Warning: access(): unknown mode {:#x}; returning EINVAL.",

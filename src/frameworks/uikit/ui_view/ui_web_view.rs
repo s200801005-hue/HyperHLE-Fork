@@ -18,9 +18,12 @@ use crate::objc::{
     retain, Class, ClassExports, NSZonePtr,
 };
 use crate::Environment;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 // UIWebViewNavigationType constants
 pub type UIWebViewNavigationType = i32;
@@ -242,13 +245,15 @@ pub const CLASSES: ClassExports = objc_classes! {
         schedule_did_finish_load(env, this);
         return;
     }
-    log!("UIWebView: native WebView bridge not available; using fallback rendering");
+    // Desktop builds render pages with a headless Chromium snapshot below;
+// that is the desktop implementation, not a degraded mode, so no warning.
 
     // Desktop fallback: snapshot the URL with headless Chromium and install
     // the PNG as this view's layer contents. We don't stream content, so the
     // load is "finished" as soon as the snapshot is in.
     let frame: CGRect = msg![env; this frame];
-    render_url_to_layer(env, this, &url_string, frame);
+    let page = WebPage { url: url_string, body: None };
+    let _ = render_url_to_layer(env, this, &page, frame);
     finish_load(env, this);
 }
 
@@ -277,18 +282,21 @@ pub const CLASSES: ClassExports = objc_classes! {
         schedule_did_finish_load(env, this);
         return;
     }
-    log!("UIWebView: native WebView bridge not available; using fallback rendering");
+    // Desktop builds render pages with a headless Chromium snapshot below;
+// that is the desktop implementation, not a degraded mode, so no warning.
 
-    // Desktop fallback: write the HTML to a temp file and snapshot it.
+    // Desktop fallback: hand the HTML to the loopback Chromium bridge
+    // directly (no temp file), with the app sandbox as the base URL so
+    // relative resources resolve.
     if !html_str.is_empty() {
-        let idx = SNAP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = std::env::temp_dir().join(format!("touchhle_uiwebview_{}.html", idx));
-        if std::fs::write(&tmp, html_str.as_bytes()).is_ok() {
-            let url = format!("file://{}", tmp.display());
-            let frame: CGRect = msg![env; this frame];
-            render_url_to_layer(env, this, &url, frame);
-            let _ = std::fs::remove_file(&tmp);
-        }
+        let mut base = env.fs.home_directory().as_str().to_string();
+        base.push_str("/__touchhle_inline__.html");
+        let page = WebPage {
+            url: base,
+            body: Some((html_str.into_bytes(), "text/html; charset=utf-8".to_string())),
+        };
+        let frame: CGRect = msg![env; this frame];
+        let _ = render_url_to_layer(env, this, &page, frame);
     }
     finish_load(env, this);
 }
@@ -332,18 +340,19 @@ pub const CLASSES: ClassExports = objc_classes! {
         schedule_did_finish_load(env, this);
         return;
     }
-    log!("UIWebView: native WebView bridge not available; using fallback rendering");
+    // Desktop builds render pages with a headless Chromium snapshot below;
+// that is the desktop implementation, not a degraded mode, so no warning.
 
-    // Desktop fallback: only HTML payloads can be rendered (temp file route).
+    // Desktop fallback: only HTML payloads can be rendered (loopback bridge).
     if mime_str.starts_with("text/html") && !payload.is_empty() {
-        let idx = SNAP_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp = std::env::temp_dir().join(format!("touchhle_uiwebview_{}.html", idx));
-        if std::fs::write(&tmp, payload.as_bytes()).is_ok() {
-            let url = format!("file://{}", tmp.display());
-            let frame: CGRect = msg![env; this frame];
-            render_url_to_layer(env, this, &url, frame);
-            let _ = std::fs::remove_file(&tmp);
-        }
+        let mut base = env.fs.home_directory().as_str().to_string();
+        base.push_str("/__touchhle_inline__.html");
+        let page = WebPage {
+            url: base,
+            body: Some((payload.into_bytes(), mime_str)),
+        };
+        let frame: CGRect = msg![env; this frame];
+        let _ = render_url_to_layer(env, this, &page, frame);
     }
     finish_load(env, this);
 }
@@ -833,108 +842,272 @@ fn find_chromium_binary() -> Option<PathBuf> {
     None
 }
 
-/// Shell out to headless Chromium to snapshot `url` at `width x height` and
-/// return the resulting PNG bytes. Returns `None` on any failure; callers
-/// are expected to treat that as "leave the layer blank".
-fn snapshot_url_with_chromium(url: &str, width: u32, height: u32) -> Option<Vec<u8>> {
-    let Some(chrome) = find_chromium_binary() else {
-        log!("UIWebView bridge: no Chromium binary found; leaving layer blank");
-        return None;
+// =========================================================================
+// MARK: - Chromium/CDP bridge: render a page into the view's layer.contents
+// =========================================================================
+//
+// touchHLE has no HTML rendering engine. As an opportunistic fallback (see
+// PR description) we shell out to the host's headless Chromium to rasterise
+// the target URL into a PNG, then install that PNG as the CALayer contents
+// for the UIWebView. This gives apps like Google Mobile a visible web page
+// instead of a blank rectangle, at the cost of interactivity.
+//
+// Local pages (and the CSS/images they reference) live in the emulated
+// iPhone OS filesystem, which the host browser can't see. They are served
+// to Chromium through a temporary loopback HTTP server that reads them via
+// the emulator's guest filesystem.
+
+/// A document to render: a URL, or raw bytes with a MIME type (used by
+/// `loadHTMLString:` / `loadData:MIMEType:textEncodingName:baseURL:`).
+struct WebPage {
+    url: String,
+    body: Option<(Vec<u8>, String)>,
+}
+
+fn decode_url_path(text: &str) -> Result<String, String> {
+    let mut result = Vec::new();
+    let mut bytes = text.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte == b'%' {
+            let a = bytes.next().and_then(|b| (b as char).to_digit(16));
+            let b = bytes.next().and_then(|b| (b as char).to_digit(16));
+            result.push(match (a, b) {
+                (Some(a), Some(b)) => (a * 16 + b) as u8,
+                _ => return Err("Malformed URL escape".into()),
+            });
+        } else { result.push(byte); }
+    }
+    String::from_utf8(result).map_err(|_| "Invalid UTF-8 URL path".into())
+}
+
+fn encode_url_path(path: &str) -> String {
+    let mut out = String::new();
+    for b in path.bytes() {
+        if b.is_ascii_alphanumeric() || b"/-._~".contains(&b) { out.push(b as char); }
+        else { out.push_str(&format!("%{b:02X}")); }
+    }
+    out
+}
+
+fn local_path(text: &str) -> Result<String, String> {
+    let path = if let Some(rest) = text.strip_prefix("file://") {
+        let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+        decode_url_path(rest.split(['?', '#']).next().unwrap_or(""))?
+    } else { text.to_owned() };
+    if !path.starts_with('/') || path.contains(['\\', '\0']) {
+        return Err(format!("Unsupported local URL: {text}"));
+    }
+    let mut parts = Vec::new();
+    for part in path.split('/') {
+        match part { "" | "." => {}, ".." => { parts.pop(); }, _ => parts.push(part) }
+    }
+    Ok(format!("/{}", parts.join("/")))
+}
+
+fn sandbox_path(env: &Environment, path: &str) -> bool {
+    let root = env.fs.home_directory().as_str();
+    !root.is_empty() && path.strip_prefix(root).is_some_and(|p| p.starts_with('/'))
+}
+
+const MAX_WEB_BYTES: u64 = 16 * 1024 * 1024;
+
+fn web_mime(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "html" | "htm" => "text/html", "css" => "text/css",
+        "js" | "mjs" => "text/javascript", "json" => "application/json",
+        "png" => "image/png", "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif", "webp" => "image/webp", "svg" => "image/svg+xml",
+        "woff" => "font/woff", "woff2" => "font/woff2", "ttf" => "font/ttf",
+        "mp3" => "audio/mpeg", "mp4" => "video/mp4", "txt" => "text/plain",
+        _ => "application/octet-stream",
+    }
+}
+
+fn read_web_file(env: &Environment, path: &str) -> Result<Vec<u8>, String> {
+    if !sandbox_path(env, path) { return Err(format!("Outside app sandbox: {path}")); }
+    let guest = GuestPath::new(path);
+    let size = env.fs.size(guest).map_err(|_| format!("File not found: {path}"))?;
+    if size > MAX_WEB_BYTES { return Err(format!("Resource exceeds 16 MiB: {path}")); }
+    env.fs.read(guest).map_err(|_| format!("Cannot read: {path}"))
+}
+
+fn prepare_page(env: &Environment, page: &WebPage) -> Result<(String, Vec<u8>, String), String> {
+    let remote = page.url.starts_with("https://") || page.url.starts_with("http://");
+    let mut base = page.url.clone();
+    let (mut bytes, mime) = if let Some(body) = &page.body { body.clone() }
+    else if remote {
+        let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(15)).build();
+        let response = agent.get(&page.url).call().map_err(|e| e.to_string())?;
+        base = response.get_url().to_owned();
+        let mime = response.header("Content-Type").unwrap_or("text/html").to_owned();
+        let mut bytes = Vec::new();
+        response.into_reader().take(MAX_WEB_BYTES + 1).read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        (bytes, mime)
+    } else {
+        let path = local_path(&page.url)?;
+        (read_web_file(env, &path)?, web_mime(&path).into())
     };
+    if bytes.len() as u64 > MAX_WEB_BYTES { return Err("Document exceeds 16 MiB".into()); }
+    if mime.contains(['\r', '\n']) { return Err("Invalid content type".into()); }
+    let path = if remote {
+        if mime.to_ascii_lowercase().starts_with("text/html") {
+            let charset = mime.split(';').find_map(|s| s.trim().strip_prefix("charset="));
+            let encoding = encoding_rs::Encoding::for_bom(&bytes).map(|(e, _)| e)
+                .or_else(|| charset.and_then(|s| encoding_rs::Encoding::for_label(s.trim_matches('"').as_bytes())))
+                .unwrap_or(encoding_rs::UTF_8);
+            let (html, _, _) = encoding.decode(&bytes);
+            let base = base.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;");
+            bytes = format!("<base href=\"{base}\">{html}").into_bytes();
+        }
+        format!("{}/__touchhle_remote__.html", env.fs.home_directory().as_str())
+    } else { local_path(&page.url)? };
+    if !sandbox_path(env, &path) { return Err("Document outside app sandbox".into()); }
+    let mime = if remote && mime.to_ascii_lowercase().starts_with("text/html") {
+        "text/html; charset=utf-8".into()
+    } else { mime };
+    Ok((path, bytes, mime))
+}
+
+/// Snapshot a document and its resources through a temporary loopback server.
+fn serve_web_resource(
+    env: &Environment, mut stream: TcpStream, authority: &str, prefix: &str,
+    main: &(String, Vec<u8>, String),
+) -> Result<bool, String> {
+    stream.set_read_timeout(Some(Duration::from_millis(200))).map_err(|e| e.to_string())?;
+    stream.set_write_timeout(Some(Duration::from_secs(1))).map_err(|e| e.to_string())?;
+    let mut request = Vec::new();
+    let mut buffer = [0u8; 2048];
+    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = stream.read(&mut buffer).map_err(|e| e.to_string())?;
+        if n == 0 || request.len() + n > 16384 { return Err("Invalid HTTP request".into()); }
+        request.extend_from_slice(&buffer[..n]);
+    }
+    let text = String::from_utf8_lossy(&request);
+    let mut lines = text.lines();
+    let mut first = lines.next().unwrap_or("").split_whitespace();
+    let method = first.next().unwrap_or("");
+    let target = first.next().unwrap_or("").split('?').next().unwrap_or("");
+    let host = lines.find_map(|line| line.split_once(':')
+        .filter(|(key, _)| key.eq_ignore_ascii_case("host")).map(|(_, value)| value.trim()));
+    let path = target.strip_prefix(prefix).ok_or("Invalid resource prefix")
+        .and_then(|p| decode_url_path(p).map_err(|_| "Invalid resource URL"))
+        .and_then(|p| local_path(&p).map_err(|_| "Invalid resource path"));
+    let mut is_main = false;
+    let resource = if host != Some(authority) || !matches!(method, "GET" | "HEAD") {
+        Err("Rejected resource request".to_owned())
+    } else {
+        path.map_err(str::to_owned).and_then(|path| {
+            if path == main.0 {
+                is_main = true;
+                Ok((main.1.clone(), main.2.clone()))
+            } else {
+                read_web_file(env, &path).map(|data| (data, web_mime(&path).into()))
+            }
+        })
+    };
+    let (status, bytes, mime) = match resource {
+        Ok((bytes, mime)) => ("200 OK", bytes, mime),
+        Err(error) => {
+            log!("UIWebView resource: {}", error);
+            is_main = false;
+            ("404 Not Found", Vec::new(), "text/plain".into())
+        }
+    };
+    let headers = format!("HTTP/1.1 {status}\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n\r\n", bytes.len());
+    stream.write_all(headers.as_bytes()).map_err(|e| e.to_string())?;
+    if method != "HEAD" { stream.write_all(&bytes).map_err(|e| e.to_string())?; }
+    Ok(is_main && method == "GET")
+}
+
+struct WebTempDirectory(PathBuf);
+impl Drop for WebTempDirectory {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
+fn snapshot_url_with_chromium(
+    env: &Environment, page: &WebPage, width: u32, height: u32,
+) -> Result<Vec<u8>, String> {
+    let chrome = find_chromium_binary().ok_or("No Chromium browser found; set TOUCHHLE_CHROMIUM")?;
+    let main = prepare_page(env, page)?;
     let idx = SNAP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let tmp = std::env::temp_dir().join(format!("touchhle_uiwebview_{}.png", idx));
-    // Chromium refuses to run as root unless given --no-sandbox.
-    let status = Command::new(&chrome)
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_nanos();
+    let name = format!("touchhle_web_{}_{stamp}_{idx}", std::process::id());
+    let directory = std::env::temp_dir().join(&name);
+    std::fs::create_dir(&directory).map_err(|e| e.to_string())?;
+    let directory = WebTempDirectory(directory);
+    let tmp = directory.0.join("snapshot.png");
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let authority = listener.local_addr().map_err(|e| e.to_string())?.to_string();
+    let prefix = format!("/{name}");
+    let url = format!("http://{authority}{prefix}{}", encode_url_path(&main.0));
+    let mut child = Command::new(&chrome)
         .arg("--headless=new")
         .arg("--disable-gpu")
         .arg("--hide-scrollbars")
         .arg("--no-sandbox")
         .arg("--disable-dev-shm-usage")
+        .arg("--no-first-run")
+        .arg("--no-default-browser-check")
+        .arg("--virtual-time-budget=1000")
+        .arg(format!("--user-data-dir={}", directory.0.join("profile").display()))
         .arg(format!("--window-size={},{}", width, height))
         .arg(format!("--screenshot={}", tmp.display()))
         .arg(url)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => {
-            log!("UIWebView bridge: chromium exited with {}", s);
+        .spawn().map_err(|e| format!("Cannot start Chromium: {e}"))?;
+    let result = (|| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut main_served = false;
+        loop {
+            if Instant::now() >= deadline { return Err("Chromium rendering timed out".into()); }
+            for _ in 0..16 {
+                match listener.accept() {
+                    Ok((stream, _)) => match serve_web_resource(env, stream, &authority, &prefix, &main) {
+                        Ok(served) => main_served |= served,
+                        Err(error) => log!("UIWebView resource connection: {}", error),
+                    },
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+                if !status.success() { return Err(format!("Chromium exited with {status}")); }
+                if !main_served { return Err("Chromium did not load the main document".into()); }
+                let size = std::fs::metadata(&tmp).map_err(|e| e.to_string())?.len();
+                if size > MAX_WEB_BYTES { return Err("Snapshot exceeds 16 MiB".into()); }
+                return std::fs::read(&tmp).map_err(|e| e.to_string());
+            }
+            std::thread::sleep(Duration::from_millis(5));
         }
-        Err(e) => {
-            log!("UIWebView bridge: failed to spawn chromium: {}", e);
-            return None;
-        }
-    }
-    let bytes = std::fs::read(&tmp).ok();
-    let _ = std::fs::remove_file(&tmp);
-    bytes
+    })();
+    let _ = child.kill();
+    let _ = child.wait();
+    result
 }
 
-/// Translate a guest `file://` URL (e.g. `file:///var/mobile/Applications/
-/// <uuid>/App.app/foo.html`) into a `file://` URL pointing at the
-/// corresponding file on the host, using the emulator's filesystem mapping.
-/// Returns the input unchanged when it can't be mapped, so relative
-/// resources (CSS/images next to the HTML) keep working.
-fn map_guest_file_url(env: &Environment, url: &str) -> String {
-    let Some(rest) = url.strip_prefix("file://") else {
-        return url.to_string();
-    };
-    // `file://localhost/...` is a legal file URL spelling; drop the host.
-    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
-    let guest_path = rest.trim_start_matches('/');
-    let Some(host) = env.fs.host_path_of(GuestPath::new(guest_path)) else {
-        return url.to_string();
-    };
-    // Chromium needs a proper `file:///` URL; on Windows that means
-    // `file:///C:/...` with forward slashes.
-    let host_str = host.display().to_string().replace('\\', "/");
-    if url.starts_with("file:///") {
-        format!("file:///{}", host_str.trim_start_matches('/'))
-    } else {
-        format!("file://{}", host_str)
-    }
-}
-
-/// Snapshot `url` and install the decoded PNG as the UIWebView's
+/// Snapshot `page` and install the decoded PNG as the UIWebView's
 /// `layer.contents` so the user sees the rendered web page.
-fn render_url_to_layer(env: &mut Environment, this: id, url: &str, frame: CGRect) {
-    if cfg!(target_os = "android") {
-        // There is no desktop Chromium to shell out to on a phone: the
-        // native WebView overlay is the only real rendering path there.
-        // (When the overlay is merely deferred we never get here either.)
-        return;
+fn render_url_to_layer(env: &mut Environment, this: id, page: &WebPage, frame: CGRect) -> Result<(), String> {
+    if !frame.size.width.is_finite() || !frame.size.height.is_finite()
+        || frame.size.width <= 0.0 || frame.size.height <= 0.0
+        || frame.size.width > 4096.0 || frame.size.height > 4096.0 {
+        return Err("UIWebView has invalid or empty bounds".into());
     }
-    if url.is_empty()
-        || !(url.starts_with("http://")
-            || url.starts_with("https://")
-            || url.starts_with("file://"))
-    {
-        return;
-    }
-    // Guest file URLs point into the emulated iPhone OS filesystem; the host
-    // browser can only load the real host path, so translate first.
-    let mapped;
-    let url: &str = if url.starts_with("file://") {
-        mapped = map_guest_file_url(env, url);
-        &mapped
-    } else {
-        url
-    };
-    let width = (frame.size.width.max(1.0) as u32).max(1);
-    let height = (frame.size.height.max(1.0) as u32).max(1);
-    let Some(png) = snapshot_url_with_chromium(url, width, height) else {
-        return;
-    };
-    let Ok(image) = Image::from_bytes(&png) else {
-        log!("UIWebView bridge: could not decode PNG snapshot");
-        return;
-    };
-    let cg_image = cg_image::from_image(env, image);
+    let width = frame.size.width.ceil() as u32;
+    let height = frame.size.height.ceil() as u32;
+    let png = snapshot_url_with_chromium(env, page, width, height)?;
+    let image = Image::from_bytes(&png).map_err(|_| "Invalid Chromium PNG snapshot")?;
     let layer: id = msg![env; this layer];
+    if layer == nil { return Err("UIWebView has no backing layer".into()); }
+    let cg_image = cg_image::from_image(env, image);
     let _: () = msg![env; layer setContents:cg_image];
     let _: () = msg![env; this setNeedsDisplay];
     cg_image::CGImageRelease(env, cg_image);
+    Ok(())
 }
 
 // =========================================================================

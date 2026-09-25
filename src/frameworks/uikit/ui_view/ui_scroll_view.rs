@@ -9,7 +9,7 @@
 
 pub mod ui_text_view;
 
-use crate::abi::{GuestArg, GuestRet};
+use crate::abi::{impl_GuestRet_for_large_struct, GuestArg};
 use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::NSInteger;
 use crate::mem::SafeRead;
@@ -38,6 +38,8 @@ pub struct UIScrollViewHostObject {
     always_bounce_vertical: bool,
     always_bounce_horizontal: bool,
     bounces: bool,
+    bounces_zoom: bool,
+    delays_content_touches: bool,
     paging_enabled: bool,
     directional_lock_enabled: bool,
     minimum_zoom_scale: CGFloat,
@@ -63,7 +65,9 @@ struct UIEdgeInsets {
     right: CGFloat,
 }
 unsafe impl SafeRead for UIEdgeInsets {}
-impl GuestRet for UIEdgeInsets {}
+// UIEdgeInsets is 16 bytes; per the AAPCS it must be returned via memory
+// (implicit pointer argument), not in registers.
+impl_GuestRet_for_large_struct!(UIEdgeInsets);
 impl GuestArg for UIEdgeInsets {
     const REG_COUNT: usize = 4;
     fn from_regs(regs: &[u32]) -> Self {
@@ -99,6 +103,8 @@ impl Default for UIScrollViewHostObject {
             always_bounce_vertical: false,
             always_bounce_horizontal: false,
             bounces: true,
+            bounces_zoom: true,
+            delays_content_touches: true,
             paging_enabled: false,
             directional_lock_enabled: false,
             minimum_zoom_scale: 1.0,
@@ -185,6 +191,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (())setScrollEnabled:(bool)enabled {
     env.objc.borrow_mut::<UIScrollViewHostObject>(this).scroll_enabled = enabled;
 }
+// Not a real UIKit selector (the property getter is `scrollEnabled`), but
+// some apps call it KVO-style; answer from the same field.
+- (bool)isScrollEnabled {
+    env.objc.borrow::<UIScrollViewHostObject>(this).scroll_enabled
+}
 
 // MARK: - Touch handling properties
 
@@ -213,6 +224,13 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<UIScrollViewHostObject>(this).bounces = bounces;
 }
 
+- (bool)bouncesZoom {
+    env.objc.borrow::<UIScrollViewHostObject>(this).bounces_zoom
+}
+- (())setBouncesZoom:(bool)value {
+    env.objc.borrow_mut::<UIScrollViewHostObject>(this).bounces_zoom = value;
+}
+
 - (bool)alwaysBounceVertical {
     env.objc.borrow::<UIScrollViewHostObject>(this).always_bounce_vertical
 }
@@ -227,8 +245,11 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<UIScrollViewHostObject>(this).always_bounce_horizontal = value;
 }
 
-- (())setDelaysContentTouches:(bool)_value {
-    // TODO
+- (bool)delaysContentTouches {
+    env.objc.borrow::<UIScrollViewHostObject>(this).delays_content_touches
+}
+- (())setDelaysContentTouches:(bool)value {
+    env.objc.borrow_mut::<UIScrollViewHostObject>(this).delays_content_touches = value;
 }
 
 // MARK: - Scroll indicators

@@ -184,6 +184,14 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
 }
 
++ (id)fileHandleWithStandardOutput {
+    // Writes to fd 1 are forwarded to the emulator's console by
+    // `posix_io::write` (STDOUT_FILENO/STDERR_FILENO interception).
+    let host_object = Box::new(NSFileHandleHostObject::new_fd(posix_io::STDOUT_FILENO));
+    let new = env.objc.alloc_object(this, host_object, &mut env.mem);
+    autorelease(env, new)
+}
+
 - (i32)fileDescriptor {
     env.objc.borrow::<NSFileHandleHostObject>(this).fd
 }
