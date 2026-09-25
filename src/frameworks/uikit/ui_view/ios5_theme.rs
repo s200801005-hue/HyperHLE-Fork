@@ -951,7 +951,7 @@ pub fn present_panel(
 
     // Buttons.
     let font: id = msg_class![env; UIFont boldSystemFontOfSize:17.0f32];
-    for (i, button_title) in titles.iter().enumerate() {
+    for (i, button_title) in titles.into_iter().enumerate() {
         let button: id = msg_class![env; UIButton buttonWithType:0i32];
         let frame = if sheet_style {
             CGRect {
