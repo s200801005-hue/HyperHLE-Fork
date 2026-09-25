@@ -140,7 +140,6 @@ pub fn fire_targets(env: &mut Environment, recognizer: id) {
     }
     release(env, recognizer);
 }
-}
 
 pub const CLASSES: ClassExports = objc_classes! {
 
