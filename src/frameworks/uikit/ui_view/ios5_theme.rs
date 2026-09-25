@@ -34,7 +34,7 @@ use crate::frameworks::core_graphics::cg_image::{
 };
 use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::{NSInteger, NSUInteger};
-use crate::frameworks::uikit::ui_control::UIControlEventTouchUpInside;
+use super::ui_control::UIControlEventTouchUpInside;
 use crate::frameworks::uikit::ui_font::UITextAlignmentCenter;
 use crate::mem::{GuestUSize, Ptr};
 use crate::objc::{id, msg, msg_class, nil, release, SEL};
