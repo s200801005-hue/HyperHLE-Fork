@@ -916,10 +916,11 @@ pub fn present_panel(
     // Title.
     if title != nil {
         let label: id = msg_class![env; UILabel alloc];
-        let label: id = msg![env; label initWithFrame:CGRect {
+        let title_rect = CGRect {
             origin: CGPoint { x: 12.0, y: 10.0 },
             size: CGSize { width: panel_w - 24.0, height: 22.0 },
-        }];
+        };
+        let label: id = msg![env; label initWithFrame:title_rect];
         () = msg![env; label setText:title];
         let font: id = msg_class![env; UIFont boldSystemFontOfSize:17.0f32];
         () = msg![env; label setFont:font];
@@ -933,10 +934,11 @@ pub fn present_panel(
     // Message (alerts only).
     if message != nil {
         let label: id = msg_class![env; UILabel alloc];
-        let label: id = msg![env; label initWithFrame:CGRect {
+        let message_rect = CGRect {
             origin: CGPoint { x: 12.0, y: 36.0 },
             size: CGSize { width: panel_w - 24.0, height: 36.0 },
-        }];
+        };
+        let label: id = msg![env; label initWithFrame:message_rect];
         () = msg![env; label setText:message];
         let font: id = msg_class![env; UIFont systemFontOfSize:14.0f32];
         () = msg![env; label setFont:font];
@@ -999,7 +1001,8 @@ pub fn present_panel(
             }
         };
         () = msg![env; button setFrame:frame];
-        () = msg![env; button setTag:i as NSInteger];
+        let tag: NSInteger = i as NSInteger;
+        () = msg![env; button setTag:tag];
         () = msg![env; button setTitle:button_title forState:0u32];
         () = msg![env; button setTitleColor:white forState:0u32];
         let button_label: id = msg![env; button titleLabel];
