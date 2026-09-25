@@ -15,12 +15,12 @@ pub mod ui_slider;
 pub mod ui_switch;
 pub mod ui_text_field;
 
-use crate::frameworks::core_graphics::CGPoint;
+use crate::frameworks::core_graphics::{CGFloat, CGPoint};
 use crate::frameworks::foundation::{NSInteger, NSUInteger};
 use crate::frameworks::uikit::ui_application;
 use crate::objc::{
-    id, impl_HostObject_with_superclass, msg, msg_class, msg_send, msg_super, nil, objc_classes,
-    release, retain, ClassExports, NSZonePtr, SEL,
+    id, msg, msg_send, nil, objc_classes, release, retain, ClassExports, HostObject,
+    NSZonePtr, SEL,
 };
 use crate::Environment;
 

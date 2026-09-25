@@ -8,8 +8,7 @@
 use super::ui_control::UIControlHostObject;
 use crate::frameworks::foundation::NSInteger;
 use crate::objc::{
-    id, impl_HostObject_with_superclass, msg_class, nil, objc_classes, release, retain,
-    ClassExports, NSZonePtr,
+    id, impl_HostObject_with_superclass, msg, msg_class, msg_super, nil, objc_classes, release, retain,    ClassExports, NSZonePtr,
 };
 
 #[derive(Default)]
@@ -59,7 +58,36 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (id)init {
-    this
+        msg_super![env; this init]
+}
+
+- (())layoutSubviews {
+    () = msg_super![env; this layoutSubviews];
+    () = msg![env; this setNeedsDisplay];
+}
+
+- (())drawRect:(CGRect)_rect {
+    use super::ios5_theme::{draw_surface, rgb};
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    let bounds: CGRect = msg![env; this bounds];
+    let host = env.objc.borrow::<UIPageControlHostObject>(this);
+    let (count, current, hidden, tint, selected_tint) = (
+        host.number_of_pages.max(0), host.current_page, host.hides_for_single_page,
+        host.page_indicator_tint_color, host.current_page_indicator_tint_color,
+    );
+    if hidden && count <= 1 { return; }
+    let start = bounds.origin.x + (bounds.size.width - (count as f32 * 9.0 - 2.0)) / 2.0;
+    for i in 0..count {
+        let color = if i == current { selected_tint } else { tint };
+        let color = if color != nil {
+            crate::frameworks::uikit::ui_color::get_rgba(&env.objc, color)
+        } else if i == current { rgb(0xFFFFFF) } else { rgb(0x9A9A9B) };
+        let rect = CGRect {
+            origin: CGPoint { x: start + i as f32 * 9.0, y: bounds.origin.y + (bounds.size.height - 7.0) / 2.0 },
+            size: CGSize { width: 7.0, height: 7.0 },
+        };
+        draw_surface(env, ctx, rect, 3.5, &[(0.0, color), (1.0, color)], rgb(0x737374));
+    }
 }
 
 - (())dealloc {
@@ -70,8 +98,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     );
     release(env, tint);
     release(env, current_tint);
-    env.objc.dealloc_object(this, &mut env.mem)
-}
+    msg_super![env; this dealloc]}
 
 // MARK: - Page count
 
@@ -89,6 +116,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     } else if host.current_page >= number_of_pages {
         host.current_page = number_of_pages - 1;
     }
+    () = msg![env; this setNeedsDisplay];   
 }
 
 // MARK: - Current page
@@ -106,6 +134,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         current_page.max(0).min(n - 1)
     };
     env.objc.borrow_mut::<UIPageControlHostObject>(this).current_page = clamped;
+    () = msg![env; this setNeedsDisplay];    
 }
 
 // MARK: - Display options
@@ -116,6 +145,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (())setHidesForSinglePage:(bool)hides {
     env.objc.borrow_mut::<UIPageControlHostObject>(this).hides_for_single_page = hides;
+    () = msg![env; this setNeedsDisplay];    
 }
 
 - (bool)defersCurrentPageDisplay {
@@ -129,8 +159,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 // When defersCurrentPageDisplay is YES the app calls this to commit the
 // pending page change to the display. We store it immediately either way.
 - (())updateCurrentPageDisplay {
-    log_dbg!("UIPageControl updateCurrentPageDisplay");
-}
+    () = msg![env; this setNeedsDisplay];}
 
 // MARK: - Tint colors
 
@@ -143,6 +172,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     release(env, old);
     retain(env, color);
     env.objc.borrow_mut::<UIPageControlHostObject>(this).page_indicator_tint_color = color;
+    () = msg![env; this setNeedsDisplay];    
 }
 
 - (id)currentPageIndicatorTintColor { // UIColor*
@@ -156,6 +186,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     retain(env, color);
     env.objc.borrow_mut::<UIPageControlHostObject>(this)
         .current_page_indicator_tint_color = color;
+    () = msg![env; this setNeedsDisplay];        
 }
 
 // MARK: - Description

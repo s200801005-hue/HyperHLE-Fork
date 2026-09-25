@@ -619,6 +619,40 @@ unsafe fn composite_layer_recursive(
         cumulative_transform
     };
 
+        // Preserve ancestor clipping while drawing this layer and its children.
+    let saved_clip = if host_obj.masks_to_bounds {
+        let enabled = gles.IsEnabled(gles11::SCISSOR_TEST) != 0;
+        let mut old = [0i32; 4];
+        let mut viewport = [0i32; 4];
+        let mut projection = [0.0f32; 16];
+        gles.GetIntegerv(gles11::SCISSOR_BOX, old.as_mut_ptr());
+        gles.GetIntegerv(gles11::VIEWPORT, viewport.as_mut_ptr());
+        gles.GetFloatv(gles11::PROJECTION_MATRIX, projection.as_mut_ptr());
+        let b = host_obj.bounds;
+        let mut low = [f32::INFINITY; 2];
+        let mut high = [f32::NEG_INFINITY; 2];
+        for (x, y) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+            let p = cumulative_transform.transform([
+                b.origin.x + x * b.size.width, b.origin.y + y * b.size.height, 0.0, 1.0,
+            ]);
+            let w: f32 = (0..4).map(|j| projection[j * 4 + 3] * p[j]).sum();
+            for axis in 0..2 {
+                let q: f32 = (0..4).map(|j| projection[j * 4 + axis] * p[j]).sum();
+                let pixel = viewport[axis] as f32 + (q / w + 1.0) * 0.5 * viewport[axis + 2] as f32;
+                low[axis] = low[axis].min(pixel);
+                high[axis] = high[axis].max(pixel);
+            }
+        }
+        let parent = if enabled { old } else { viewport };
+        let left = (low[0].floor() as i32).max(parent[0]);
+        let bottom = (low[1].floor() as i32).max(parent[1]);
+        let right = (high[0].ceil() as i32).min(parent[0].saturating_add(parent[2]));
+        let top = (high[1].ceil() as i32).min(parent[1].saturating_add(parent[3]));
+        gles.Enable(gles11::SCISSOR_TEST);
+        gles.Scissor(left, bottom, right.saturating_sub(left).max(0), top.saturating_sub(bottom).max(0));
+        Some((enabled, old))
+    } else { None };
+
     // Draw background color, if any
     let have_background = if let Some(background_color) = host_obj.background_color {
         let misc = env
@@ -934,6 +968,12 @@ unsafe fn composite_layer_recursive(
     }
 }
 
+    if let Some((enabled, old)) = saved_clip {
+        let mut gles = env.window.as_mut().unwrap().make_internal_gl_ctx_current();
+        gles.Scissor(old[0], old[1], old[2], old[3]);
+        if !enabled { gles.Disable(gles11::SCISSOR_TEST); }
+    }
+    
 const FLOATS_PER_POINT: usize = 2;
 const BASIC_SQUARE_POINTS: [f32; 4 * FLOATS_PER_POINT] = [0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0];
 const SQUARE_INDICES: [u8; 6] = [0, 1, 2, 2, 1, 3];

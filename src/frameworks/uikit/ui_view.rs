@@ -10,6 +10,7 @@
 //! Useful resources:
 //! - Apple's [View Programming Guide for iOS](https://developer.apple.com/library/archive/documentation/WindowsViews/Conceptual/ViewPG_iPhoneOS/Introduction/Introduction.html)
 
+pub mod ios5_theme;
 pub mod ui_alert_view;
 pub mod ui_collection_view;
 pub mod ui_control;
@@ -1532,6 +1533,9 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (id)backgroundColor {
     let layer = env.objc.borrow::<UIViewHostObject>(this).layer;
     let cg_color: CGColorRef = msg![env; layer backgroundColor];
+    if cg_color == nil {
+        return nil;
+    }    
     msg_class![env; UIColor colorWithCGColor:cg_color]
 }
 - (())setBackgroundColor:(id)color {

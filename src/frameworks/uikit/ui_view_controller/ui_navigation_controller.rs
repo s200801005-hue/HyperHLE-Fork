@@ -5,7 +5,7 @@
  */
 //! `UINavigationController`.
 
-use crate::frameworks::core_graphics::CGRect;
+use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::ns_string::get_static_str;
 use crate::frameworks::foundation::{ns_array, NSUInteger};
 use crate::objc::{
@@ -22,6 +22,7 @@ struct UINavigationControllerHostObject {
     toolbar: id,
     /// Whether the navigation bar is hidden.
     navigation_bar_hidden: bool,
+    laying_out: bool,    
     /// Whether the bottom toolbar is hidden (default true in UIKit).
     toolbar_hidden: bool,
     /// Whether an interactive pop gesture recogniser is enabled (iOS 7+).
@@ -54,6 +55,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     });
     env.objc.alloc_object(this, host_object, &mut env.mem)
 }
+
 
 - (id)initWithRootViewController:(id)root_vc {
     let this: id = msg![env; this init];
@@ -120,6 +122,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (())pushViewController:(id)view_controller animated:(bool)_animated {
     if view_controller == nil { return; }
+    let previous: id = msg![env; this topViewController];
 
     {
         let stack = &mut env
@@ -134,6 +137,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
     retain(env, view_controller);
     let _: () = msg![env; view_controller setNavigationController:this];
+    if previous != nil { () = msg![env; previous viewWillDisappear:false]; }
 
     // Delegate: willShow. Use `register_host_selector` so we don't panic when
     // the app's delegate doesn't implement (and therefore never references)
@@ -163,7 +167,9 @@ pub const CLASSES: ClassExports = objc_classes! {
     let _: () = msg![env; vc_view setFrame:bounds];
     let _: () = msg![env; view_controller viewWillAppear:false];
     let _: () = msg![env; self_view addSubview:vc_view];
+    () = msg![env; this _touchHLELayoutNavigation];    
     let _: () = msg![env; view_controller viewDidAppear:false];
+    if previous != nil { () = msg![env; previous viewDidDisappear:false]; }   
 
     // Delegate: didShow.
     let delegate = env.objc.borrow::<UINavigationControllerHostObject>(this).delegate;
@@ -213,7 +219,16 @@ pub const CLASSES: ClassExports = objc_classes! {
         .copied()
         .unwrap_or(nil);
     if new_top != nil {
+        let delegate = env.objc.borrow::<UINavigationControllerHostObject>(this).delegate;
+        let sel = env.objc.register_host_selector(
+            "navigationController:willShowViewController:animated:".into(), &mut env.mem,
+        );
+        let responds: bool = msg![env; delegate respondsToSelector:sel];
+        if responds {
+            () = msg![env; delegate navigationController:this willShowViewController:new_top animated:animated];
+        }
         let _: () = msg![env; new_top viewWillAppear:animated];
+        () = msg![env; this _touchHLELayoutNavigation];        
         let _: () = msg![env; new_top viewDidAppear:animated];
         // Delegate: didShow new top.
         let delegate = env.objc.borrow::<UINavigationControllerHostObject>(this).delegate;
@@ -231,8 +246,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         }
     }
 
-    release(env, popped);
-    popped
+    autorelease(env, popped)
 }
 
 - (id)popToViewController:(id)view_controller animated:(bool)animated {
@@ -255,6 +269,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         .collect();
 
     let popped_arr_vcs = to_pop.clone();
+    for &vc in &popped_arr_vcs { retain(env, vc); }    
     for &vc in &to_pop {
         let vc_view: id = msg![env; vc view];
         let _: () = msg![env; vc viewWillDisappear:animated];
@@ -266,12 +281,12 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     if view_controller != nil {
         let _: () = msg![env; view_controller viewWillAppear:animated];
+        () = msg![env; this _touchHLELayoutNavigation];        
         let _: () = msg![env; view_controller viewDidAppear:animated];
     }
 
     // Build return array of popped VCs.
-    let retained: Vec<id> = popped_arr_vcs.iter().map(|&vc| { retain(env, vc); vc }).collect();
-    let arr = ns_array::from_vec(env, retained);
+    let arr = ns_array::from_vec(env, popped_arr_vcs);
     autorelease(env, arr)
 }
 
@@ -300,6 +315,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     if top != nil {
         () = msg![env; top viewWillAppear:animated];
     }
+    () = msg![env; this _touchHLELayoutNavigation];   
 }
 
 - (())viewDidAppear:(bool)animated {
@@ -377,8 +393,10 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
 
     let count: NSUInteger = msg![env; controllers count];
-    if count == 0 { return; }
-
+    if count == 0 {
+        () = msg![env; this _touchHLELayoutNavigation];
+        return;
+    }
     let mut tmp: Vec<id> = Vec::new();
     for i in 0..(count - 1) {
         let vc: id = msg![env; controllers objectAtIndex:i];
@@ -392,6 +410,60 @@ pub const CLASSES: ClassExports = objc_classes! {
 
     let last_vc: id = msg![env; controllers objectAtIndex:(count - 1)];
     let _: () = msg![env; this pushViewController:last_vc animated:animated];
+}
+
+(())_touchHLELayoutNavigation {
+    let host = env.objc.borrow_mut::<UINavigationControllerHostObject>(this);
+    if host.laying_out { return; }
+    host.laying_out = true;
+    let stack = host.navigation_stack.clone();
+    let hidden = host.navigation_bar_hidden;
+    let container: id = msg![env; this view];
+    let bounds: CGRect = msg![env; container bounds];
+    let bar: id = msg![env; this navigationBar];
+    () = msg![env; bar setDelegate:this];
+    let items: id = msg_class![env; NSMutableArray array];
+    for &vc in &stack {
+        let item: id = msg![env; vc navigationItem];
+        () = msg![env; items addObject:item];
+    }
+    () = msg![env; bar setItems:items];
+    let height = if hidden { 0.0 } else { 44.0f32.min(bounds.size.height.max(0.0)) };
+    let content = CGRect {
+        origin: CGPoint { x: bounds.origin.x, y: bounds.origin.y + height },
+        size: CGSize { width: bounds.size.width, height: (bounds.size.height - height).max(0.0) },
+    };
+    if let Some(&top) = stack.last() {
+        for &vc in &stack {
+            if vc != top {
+                let view = env.objc.borrow::<super::UIViewControllerHostObject>(vc).view;
+                if view != nil { () = msg![env; view removeFromSuperview]; }
+            }
+        }
+        let view: id = msg![env; top view];
+        () = msg![env; view setFrame:content];
+        let parent: id = msg![env; view superview];
+        if parent != container { () = msg![env; container addSubview:view]; }
+    }
+    () = msg![env; bar setFrame:(CGRect {
+        origin: bounds.origin,
+        size: CGSize { width: bounds.size.width, height: 44.0 },
+    })];
+    () = msg![env; bar setHidden:hidden];
+    let parent: id = msg![env; bar superview];
+    if parent != container { () = msg![env; container addSubview:bar]; }
+    () = msg![env; container bringSubviewToFront:bar];
+    env.objc.borrow_mut::<UINavigationControllerHostObject>(this).laying_out = false;
+}
+
+- (bool)navigationBar:(id)_bar shouldPopItem:(id)_item {
+    let _: id = msg![env; this popViewControllerAnimated:true];
+    false
+}
+
+- (())viewDidLayoutSubviews {
+    () = msg_super![env; this viewDidLayoutSubviews];
+    () = msg![env; this _touchHLELayoutNavigation];
 }
 
 // =========================================================================
@@ -420,6 +492,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<UINavigationControllerHostObject>(this).navigation_bar_hidden = hidden;
     let bar = msg![env; this navigationBar];
     let _: () = msg![env; bar setHidden:hidden];
+    () = msg![env; this _touchHLELayoutNavigation];    
 }
 
 // =========================================================================
@@ -499,10 +572,10 @@ pub const CLASSES: ClassExports = objc_classes! {
         let _: () = msg![env; vc setNavigationController:nil];
         release(env, vc);
     }
+    () = msg![env; bar setDelegate:nil];    
     release(env, bar);
     release(env, tb);
-    env.objc.dealloc_object(this, &mut env.mem)
-}
+    msg_super![env; this dealloc]}
 
 // =========================================================================
 // MARK: - Description
@@ -515,6 +588,29 @@ pub const CLASSES: ClassExports = objc_classes! {
     let s = format!("<UINavigationController: {:?}; stackDepth={}>", this, depth);
     let cstr = env.mem.alloc_and_write_cstr(s.as_bytes());
     msg_class![env; NSString stringWithUTF8String:cstr]
+}
+
+@end
+
+
+@implementation _touchHLENavigationContainer: UIView
+
+- (())layoutSubviews {
+    () = msg_super![env; this layoutSubviews];
+    let controller: id = msg![env; this nextResponder];
+    let sel = env.objc.register_host_selector("_touchHLELayoutNavigation".into(), &mut env.mem);
+    let responds: bool = msg![env; controller respondsToSelector:sel];
+    if responds { () = msg![env; controller _touchHLELayoutNavigation]; }
+}
+
+- (())setFrame:(CGRect)frame {
+    () = msg_super![env; this setFrame:frame];
+    () = msg![env; this layoutSubviews];
+}
+
+- (())setBounds:(CGRect)bounds {
+    () = msg_super![env; this setBounds:bounds];
+    () = msg![env; this layoutSubviews];
 }
 
 @end

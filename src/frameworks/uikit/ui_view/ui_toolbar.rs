@@ -86,6 +86,7 @@ pub struct UIToolbarHostObject {
     /// Retains one reference per slot independently of `items`.
     button_views: Vec<id>,
     bar_style: UIBarStyle,
+    surface_tint: Option<super::ios5_theme::Rgba>,    
     /// Whether the toolbar background is translucent (default: true).
     is_translucent: bool,
     /// Weak reference — not retained, matches UIKit convention.
@@ -100,6 +101,7 @@ impl Default for UIToolbarHostObject {
             items: Vec::new(),
             button_views: Vec::new(),
             bar_style: UIBarStyle::UIBarStyleDefault,
+            surface_tint: None,            
             is_translucent: true,
             delegate: nil,
         }
@@ -200,6 +202,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         items,
         button_views,
         bar_style: _,
+        surface_tint: _,        
         is_translucent: _,
         delegate: _,  // weak — not released
     } = std::mem::take(env.objc.borrow_mut(this));
@@ -375,8 +378,16 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())drawRect:(CGRect)_rect {
-    // Background is set in initWithFrame: / setBarStyle: / setTranslucent:.
-}
+    use super::ios5_theme::{draw_bar_background, BarPalette};
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    let bounds: CGRect = msg![env; this bounds];
+    let host = env.objc.borrow::<UIToolbarHostObject>(this);
+    let palette = if let Some(tint) = host.surface_tint {
+        BarPalette::from_tint(tint)
+    } else if host.bar_style == UIBarStyle::UIBarStyleBlack {
+        BarPalette::black()
+    } else { BarPalette::navigation_default() };
+    draw_bar_background(env, ctx, bounds, palette);}
 
 // MARK: Bar style
 
@@ -419,6 +430,11 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 // barTintColor overrides the entire toolbar background color.
 - (())setBarTintColor:(id)color {
+        let tint = if color == nil { None } else {
+        Some(crate::frameworks::uikit::ui_color::get_rgba(&env.objc, color))
+    };
+    env.objc.borrow_mut::<UIToolbarHostObject>(this).surface_tint = tint;
+    () = msg![env; this setNeedsDisplay];
     if color != nil {
         () = msg![env; this setBackgroundColor:color];
         () = msg![env; this setNeedsDisplay];

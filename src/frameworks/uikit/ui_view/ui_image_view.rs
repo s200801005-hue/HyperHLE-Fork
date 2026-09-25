@@ -28,6 +28,9 @@ struct UIImageViewHostObject {
     superclass: super::UIViewHostObject,
     /// `UIImage*`
     image: id,
+        /// `UIImage*`, retained.
+    highlighted_image: id,
+    highlighted: bool,
     /// `NSArray<UIImage *>*`
     animation_images: id,
     /// Total duration of one animation cycle. `0.0` means the default
@@ -71,10 +74,12 @@ pub const CLASSES: ClassExports = objc_classes! {
     let &UIImageViewHostObject {
         superclass: _,
         image,
+     highlighted_image,
         animation_images,
         ..
     } = env.objc.borrow(this);
     release(env, image);
+    release(env, highlighted_image);
     release(env, animation_images);
     msg_super![env; this dealloc]
 }
@@ -105,8 +110,66 @@ pub const CLASSES: ClassExports = objc_classes! {
     this
 }
 
+- (id)initWithImage:(id)image highlightedImage:(id)highlighted_image {
+    let size: CGSize = if image == nil {
+        CGSize { width: 0.0, height: 0.0 }
+    } else {
+        msg![env; image size]
+    };
+    let frame = CGRect {
+        origin: CGPoint { x: 0.0, y: 0.0 },
+        size,
+    };
+    let this: id = msg_super![env; this initWithFrame:frame];
+    if this == nil {
+        return nil;
+    }
+    () = msg![env; this setImage:image];
+    () = msg![env; this setHighlightedImage:highlighted_image];
+    () = msg![env; this setOpaque:false];
+    this
+}
+
 - (id)image {
     env.objc.borrow::<UIImageViewHostObject>(this).image
+}
+
+- (id)highlightedImage {
+    env.objc.borrow::<UIImageViewHostObject>(this).highlighted_image
+}
+
+- (())setHighlightedImage:(id)new_image {
+    retain(env, new_image);
+    let host_obj = env.objc.borrow_mut::<UIImageViewHostObject>(this);
+    let old_image = std::mem::replace(&mut host_obj.highlighted_image, new_image);
+    release(env, old_image);
+
+    let host_obj = env.objc.borrow::<UIImageViewHostObject>(this);
+    if host_obj.animation_start.is_none() {
+        let image = if host_obj.highlighted && host_obj.highlighted_image != nil {
+            host_obj.highlighted_image
+        } else {
+            host_obj.image
+        };
+        set_layer_contents(env, this, image);
+    }
+}
+
+- (bool)isHighlighted {
+    env.objc.borrow::<UIImageViewHostObject>(this).highlighted
+}
+
+- (())setHighlighted:(bool)highlighted {
+    let host_obj = env.objc.borrow_mut::<UIImageViewHostObject>(this);
+    host_obj.highlighted = highlighted;
+    if host_obj.animation_start.is_none() {
+        let image = if highlighted && host_obj.highlighted_image != nil {
+            host_obj.highlighted_image
+        } else {
+            host_obj.image
+        };
+        set_layer_contents(env, this, image);
+    }
 }
 
 - (())setImage:(id)new_image { // UIImage*
@@ -116,8 +179,14 @@ pub const CLASSES: ClassExports = objc_classes! {
     release(env, old_image);
 
     // While animating, the animation frames take precedence over the image.
-    if env.objc.borrow::<UIImageViewHostObject>(this).animation_start.is_none() {
-        set_layer_contents(env, this, new_image);
+    let host_obj = env.objc.borrow::<UIImageViewHostObject>(this);
+    if host_obj.animation_start.is_none() {
+        let image = if host_obj.highlighted && host_obj.highlighted_image != nil {
+            host_obj.highlighted_image
+        } else {
+            host_obj.image
+        };
+        set_layer_contents(env, this, image);
     }
 }
 
@@ -187,8 +256,13 @@ pub const CLASSES: ClassExports = objc_classes! {
     let state = &mut env.framework_state.uikit.ui_view.ui_image_view;
     state.animating_views.retain(|&view| view != this);
 
-    // Restore the normal image.
-    let image = env.objc.borrow::<UIImageViewHostObject>(this).image;
+    // Restore the image for the current highlight state.
+    let host_obj = env.objc.borrow::<UIImageViewHostObject>(this);
+    let image = if host_obj.highlighted && host_obj.highlighted_image != nil {
+        host_obj.highlighted_image
+    } else {
+        host_obj.image
+    };
     set_layer_contents(env, this, image);
 
     release(env, this);

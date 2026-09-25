@@ -1135,31 +1135,26 @@ fn path_for_resource_helper(
     // it produces `<bundle>/file/Data/file` rather than Unity's
     // `<bundle>/Data/file`.  Start again from the bundle resource root and
     // apply the request components in their original order.
-    let data_path: id = msg![env; bundle resourcePath];
-    let data_path: id = msg![env; data_path stringByAppendingPathComponent:data_component];
-    let data_path: id = if directory != nil {
-        msg![env; data_path stringByAppendingPathComponent:directory]
-    } else {
-        data_path
-    };
-    let data_path: id = msg![env; data_path stringByAppendingPathComponent:name];
-    let data_path: id = if extension != nil {
+    let mut data_path: id = msg![env; bundle resourcePath];
+    data_path = msg![env; data_path stringByAppendingPathComponent:data_component];
+    if lproj != nil {
+        data_path = msg![env; data_path stringByAppendingPathComponent:lproj];
+    }
+    if directory != nil {
+        data_path = msg![env; data_path stringByAppendingPathComponent:directory];
+    }
+    data_path = msg![env; data_path stringByAppendingPathComponent:name];
+    if extension != nil {
         let ext_str = ns_string::to_rust_string(env, extension);
-        if ext_str.is_empty() {
-            data_path
-        } else {
-            msg![env; data_path stringByAppendingPathExtension:extension]
+        if !ext_str.is_empty() {
+            data_path = msg![env; data_path stringByAppendingPathExtension:extension];
         }
-    } else {
-        data_path
-    };
+    }
     let data_path_exists: bool = msg![env; file_manager fileExistsAtPath:data_path];
-    // This fires hundreds of times per app launch for games that probe many
-    // resource names; keep it out of the user-facing log.
-    log_dbg!(
+    log!(
         "NSBundle resource lookup: {:?} missing, Unity Data fallback {:?} exists={}",
-        path,
-        data_path,
+        ns_string::to_rust_string(env, path),
+        ns_string::to_rust_string(env, data_path),
         data_path_exists
     );
     if data_path_exists {

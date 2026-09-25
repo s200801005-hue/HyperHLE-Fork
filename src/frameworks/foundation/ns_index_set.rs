@@ -69,11 +69,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (id)indexSetWithIndexesInRange:(NSRange)range {
     let new: id = msg![env; this alloc];
-    let new: id = msg![env; new init];
-    {
-        let host = env.objc.borrow_mut::<NSIndexSetHostObject>(new);
-        set_range(host, range.location, range.length);
-    }
+    let new: id = msg![env; new initWithIndexesInRange:range];
     autorelease(env, new)
 }
 
@@ -122,6 +118,8 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (NSUInteger)countOfIndexesInRange:(NSRange)range {
+    let location = range.location;
+    let length = range.length;    
     let end = (range.location as u64) + (range.length as u64);
     env.objc
         .borrow::<NSIndexSetHostObject>(this)

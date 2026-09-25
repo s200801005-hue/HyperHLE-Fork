@@ -114,6 +114,14 @@ fn layout(env: &mut Environment, this: id) {
     () = msg![env; track_left  setFrame:left_rect];
     () = msg![env; track_right setFrame:right_rect];
     () = msg![env; thumb       setFrame:thumb_rect];
+     use crate::frameworks::uikit::ui_view::ios5_theme::{rgb, set_surface};
+    set_surface(env, track_left, TRACK_HEIGHT / 2.0,
+        &[(0.0, rgb(0x278AF2)), (1.0, rgb(0x3EC9FB))], rgb(0x405F8A));
+    set_surface(env, track_right, TRACK_HEIGHT / 2.0,
+        &[(0.0, rgb(0x9A9A9B)), (1.0, rgb(0xC4C4C7))], rgb(0x737374));
+    set_surface(env, thumb, THUMB_RADIUS,
+        &[(0.0, rgb(0xFFFFFF)), (0.5, rgb(0xE9E9EB)), (1.0, rgb(0xB8B8BD))],
+        rgb(0x737374));   
 }
 
 fn init_common(env: &mut Environment, this: id) -> id {

@@ -16,6 +16,18 @@ use crate::objc::{
 };
 
 #[derive(Default)]
+struct UIProgressViewHostObject {
+    superclass: ui_view::UIViewHostObject,
+    progress: f32,
+    style: i32,
+    progress_tint: id,
+    track_tint: id,
+    progress_image: id,
+    track_image: id,
+}
+impl_HostObject_with_superclass!(UIProgressViewHostObject);
+
+#[derive(Default)]
 struct UITableViewControllerHostObject {
     superclass: UIViewControllerHostObject,
     /// `UITableViewStyle` passed to `-initWithStyle:` (0 = plain, 1 = grouped),
@@ -32,6 +44,9 @@ pub struct UITableViewCellHostObject {
     text_label: id,
     detail_text_label: id,
     image_view: id,
+    selected: bool,
+    grouped_top: bool,
+    grouped_bottom: bool,
 }
 impl_HostObject_with_superclass!(UITableViewCellHostObject);
 impl Default for UITableViewCellHostObject {
@@ -42,6 +57,9 @@ impl Default for UITableViewCellHostObject {
             text_label: nil,
             detail_text_label: nil,
             image_view: nil,
+            selected: false,
+            grouped_top: false,
+            grouped_bottom: false,
         }
     }
 }
@@ -61,6 +79,12 @@ pub struct UITableViewHostObject {
     cells: Vec<id>,
     /// Index paths matching `cells` 1:1.
     cell_index_paths: Vec<id>,
+    selected_path: id,
+    pressed_path: id,
+    tracked_touch: id,
+    touch_start: CGPoint,
+    allows_selection: bool,
+    style: i32,
     row_height: f32,
     section_header_height: f32,
     section_footer_height: f32,
@@ -68,6 +92,8 @@ pub struct UITableViewHostObject {
     separator_color: id,
     table_header_view: id,
     table_footer_view: id,
+    /// Retained background view, pinned to the visible bounds.
+    background_view: id,
     /// Whether we have performed the implicit first `reloadData`. UIKit
     /// reloads a table the first time it lays out with a data source; touchHLE
     /// has no automatic layout pass, so we trigger that reload ourselves the
@@ -82,6 +108,12 @@ impl Default for UITableViewHostObject {
             data_source: nil,
             cells: Vec::new(),
             cell_index_paths: Vec::new(),
+            selected_path: nil,
+            pressed_path: nil,
+            tracked_touch: nil,
+            touch_start: CGPoint::default(),
+            allows_selection: true,
+            style: 0,
             row_height: 44.0,
             section_header_height: 22.0,
             section_footer_height: 0.0,
@@ -89,6 +121,7 @@ impl Default for UITableViewHostObject {
             separator_color: nil,
             table_header_view: nil,
             table_footer_view: nil,
+            background_view: nil,
             auto_reloaded: false,
         }
     }
@@ -110,14 +143,18 @@ fn maybe_auto_reload(env: &mut crate::Environment, this: id) {
     if bw <= 0.0 || bh <= 0.0 {
         return;
     }
-    env.objc
-        .borrow_mut::<UITableViewHostObject>(this)
-        .auto_reloaded = true;
+    env.objc.borrow_mut::<UITableViewHostObject>(this).auto_reloaded = true;
     () = msg![env; this reloadData];
 }
 
 /// Drop the cell list and (optionally) remove the cell views from the table.
 fn clear_cells(env: &mut crate::Environment, this: id, remove_subviews: bool) {
+    let host = env.objc.borrow_mut::<UITableViewHostObject>(this);
+    let selected = std::mem::replace(&mut host.selected_path, nil);
+    let pressed = std::mem::replace(&mut host.pressed_path, nil);
+    host.tracked_touch = nil;
+    release(env, selected);
+    release(env, pressed);
     // Take both vectors out so we can release without nested borrows.
     let (cells, paths) = {
         let host = env.objc.borrow_mut::<UITableViewHostObject>(this);
@@ -140,10 +177,7 @@ fn clear_cells(env: &mut crate::Environment, this: id, remove_subviews: bool) {
 fn make_rect(x: f32, y: f32, w: f32, h: f32) -> CGRect {
     CGRect {
         origin: CGPoint { x, y },
-        size: CGSize {
-            width: w,
-            height: h,
-        },
+        size: CGSize { width: w, height: h },
     }
 }
 
@@ -194,10 +228,7 @@ fn layout_cell_contents(env: &mut crate::Environment, this: id) {
 /// `UIImageView`) with a transparent background so the cell shows through,
 /// add it to the content view, and store it in `slot`.
 fn ensure_cell_subview(env: &mut crate::Environment, this: id, class_name: &str) -> id {
-    let content_view = env
-        .objc
-        .borrow::<UITableViewCellHostObject>(this)
-        .content_view;
+    let content_view = env.objc.borrow::<UITableViewCellHostObject>(this).content_view;
     let class = env.objc.get_known_class(class_name, &mut env.mem);
     let view: id = msg![env; class alloc];
     let view: id = msg![env; view init];
@@ -232,6 +263,56 @@ pub const CLASSES: ClassExports = objc_classes! {
 + (id)allocWithZone:(NSZonePtr)_zone {
     let host_object = Box::<UITableViewCellHostObject>::default();
     env.objc.alloc_object(this, host_object, &mut env.mem)
+}
+
+- (())drawRect:(CGRect)_rect {
+    use ui_view::ios5_theme::{fill_solid, rgb};
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    if ctx == nil { return; }
+    let bounds: CGRect = msg![env; this bounds];
+    let host = env.objc.borrow::<UITableViewCellHostObject>(this);
+    let (selected, top, bottom) = (host.selected, host.grouped_top, host.grouped_bottom);
+    let parent: id = msg![env; this superview];
+    let class = env.objc.get_known_class("UITableView", &mut env.mem);
+    let in_table: bool = msg![env; parent isKindOfClass:class];
+    let mut separator = true;
+    let mut edge = rgb(0xB8BEC5);
+    if in_table {
+        let style: i32 = msg![env; parent separatorStyle];
+        separator = style != 0;
+        let color: id = msg![env; parent separatorColor];
+        if color != nil { edge = crate::frameworks::uikit::ui_color::get_rgba(&env.objc, color); }
+    }
+    let bg: id = msg![env; this backgroundColor];
+    let normal = if bg == nil { rgb(0xF7F7F7) }
+        else { crate::frameworks::uikit::ui_color::get_rgba(&env.objc, bg) };
+    let h = bounds.size.height;
+    let r = 8.0f32.min(bounds.size.width / 2.0).min(h / 2.0).max(0.0);
+    for i in 0..(h * 2.0).ceil() as i32 {
+        let y = i as f32 * 0.5;
+        let cy = y + 0.25;
+        let distance = if top && cy < r { r - cy }
+            else if bottom && cy > h - r { cy - (h - r) } else { 0.0 };
+        let inset = r - (r * r - distance * distance).max(0.0).sqrt();
+        let mut strip = CGRect {
+            origin: CGPoint { x: bounds.origin.x + inset, y: bounds.origin.y + y },
+            size: CGSize { width: (bounds.size.width - 2.0 * inset).max(0.0), height: (h - y).min(0.5) },
+        };
+        if separator || top || bottom { fill_solid(env, ctx, strip, edge); }
+        if (top && y < 0.5) || ((separator || bottom) && y + 0.5 >= h) { continue; }
+        if top || bottom {
+            strip.origin.x += 0.5;
+            strip.size.width = (strip.size.width - 1.0).max(0.0);
+        }
+        let t = cy / h.max(1.0);
+        let color = if selected {
+            let a = rgb(0x278AF2);
+            let b = rgb(0x405F8A);
+            (a.0 + (b.0 - a.0) * t, a.1 + (b.1 - a.1) * t,
+             a.2 + (b.2 - a.2) * t, 1.0)
+        } else { normal };
+        fill_solid(env, ctx, strip, color);
+    }
 }
 
 - (id)initWithFrame:(CGRect)frame {
@@ -352,9 +433,19 @@ pub const CLASSES: ClassExports = objc_classes! {
 - (())setAccessoryType:(i32)_type {}
 - (i32)selectionStyle { 0 }
 - (())setSelectionStyle:(i32)_style {}
-- (bool)isSelected { false }
-- (())setSelected:(bool)_selected {}
-- (())setSelected:(bool)_selected animated:(bool)_animated {}
+- (bool)isSelected {
+    env.objc.borrow::<UITableViewCellHostObject>(this).selected
+}
+- (())setSelected:(bool)selected {
+    () = msg![env; this setSelected:selected animated:false];
+}
+- (())setSelected:(bool)selected animated:(bool)_animated {
+    let host = env.objc.borrow_mut::<UITableViewCellHostObject>(this);
+    host.selected = selected;
+    let labels = [host.text_label, host.detail_text_label];
+    for label in labels { () = msg![env; label setHighlighted:selected]; }
+    () = msg![env; this setNeedsDisplay];
+}
 - (bool)isHighlighted { false }
 - (())setHighlighted:(bool)_highlighted {}
 - (())setHighlighted:(bool)_highlighted animated:(bool)_animated {}
@@ -374,27 +465,110 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @implementation UIProgressView: UIView
 
++ (id)allocWithZone:(NSZonePtr)_zone {
+    env.objc.alloc_object(this, Box::<UIProgressViewHostObject>::default(), &mut env.mem)
+}
+
+- (())layoutSubviews {
+    () = msg_super![env; this layoutSubviews];
+    () = msg![env; this setNeedsDisplay];
+}
+
+- (())drawRect:(CGRect)_rect {
+    use ui_view::ios5_theme::{draw_recessed_track, draw_surface, inset_rect, rgb};
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    let bounds: CGRect = msg![env; this bounds];
+    let host = env.objc.borrow::<UIProgressViewHostObject>(this);
+    let (progress, style, tint, track_tint, image, track_image) = (
+        host.progress, host.style, host.progress_tint, host.track_tint,
+        host.progress_image, host.track_image,
+    );
+    let height = bounds.size.height.min(if style == 1 { 7.0 } else { 9.0 }).max(0.0);
+    let track = CGRect {
+        origin: CGPoint { x: bounds.origin.x, y: bounds.origin.y + (bounds.size.height - height) / 2.0 },
+        size: CGSize { width: bounds.size.width, height },
+    };
+    if track_image != nil { () = msg![env; track_image drawInRect:track]; }
+    else {
+        let color = if track_tint == nil { rgb(0xC4C4C7) } else {
+            crate::frameworks::uikit::ui_color::get_rgba(&env.objc, track_tint)
+        };
+        draw_recessed_track(env, ctx, track, color, height / 2.0);
+    }
+    let mut fill = inset_rect(track, 1.0, 1.0);
+    fill.size.width *= progress;
+    if image != nil { () = msg![env; image drawInRect:fill]; }
+    else {
+        let top = if tint == nil { rgb(0x278AF2) } else {
+            crate::frameworks::uikit::ui_color::get_rgba(&env.objc, tint)
+        };
+        let bottom = if tint == nil { rgb(0x3EC9FB) } else {
+            ui_view::ios5_theme::scale_brightness(top, 1.15)
+        };
+        draw_surface(env, ctx, fill, height / 2.0,
+            &[(0.0, top), (1.0, bottom)], rgb(0x405F8A));
+    }
+}
+
+- (())dealloc {
+    let host = env.objc.borrow::<UIProgressViewHostObject>(this);
+    let refs = [host.progress_tint, host.track_tint, host.progress_image, host.track_image];
+    for obj in refs { release(env, obj); }
+    msg_super![env; this dealloc]
+}
+
 - (id)initWithFrame:(CGRect)frame {
     msg_super![env; this initWithFrame:frame]
 }
 
-- (id)initWithProgressViewStyle:(i32)_style {
-    msg_super![env; this init]
+- (id)initWithProgressViewStyle:(i32)style {
+    let this: id = msg![env; this initWithFrame:(CGRect {
+        origin: CGPoint::default(), size: CGSize { width: 150.0, height: 9.0 },
+    })];
+    () = msg![env; this setProgressViewStyle:style];
+    this
 }
 
-- (f32)progress { 0.0 }
-- (())setProgress:(f32)_progress {}
-- (())setProgress:(f32)_progress animated:(bool)_animated {}
-- (i32)progressViewStyle { 0 }
-- (())setProgressViewStyle:(i32)_style {}
-- (id)progressTintColor { nil }
-- (())setProgressTintColor:(id)_color {}
-- (id)trackTintColor { nil }
-- (())setTrackTintColor:(id)_color {}
-- (id)progressImage { nil }
-- (())setProgressImage:(id)_image {}
-- (id)trackImage { nil }
-- (())setTrackImage:(id)_image {}
+- (f32)progress { env.objc.borrow::<UIProgressViewHostObject>(this).progress }
+- (())setProgress:(f32)value {
+    env.objc.borrow_mut::<UIProgressViewHostObject>(this).progress =
+        if value.is_finite() { value.clamp(0.0, 1.0) } else { 0.0 };
+    () = msg![env; this setNeedsDisplay];
+}
+- (())setProgress:(f32)value animated:(bool)_animated { () = msg![env; this setProgress:value]; }
+- (i32)progressViewStyle { env.objc.borrow::<UIProgressViewHostObject>(this).style }
+- (())setProgressViewStyle:(i32)style {
+    env.objc.borrow_mut::<UIProgressViewHostObject>(this).style = style;
+    () = msg![env; this setNeedsDisplay];
+}
+- (id)progressTintColor { env.objc.borrow::<UIProgressViewHostObject>(this).progress_tint }
+- (())setProgressTintColor:(id)color {
+    retain(env, color);
+    let old = std::mem::replace(&mut env.objc.borrow_mut::<UIProgressViewHostObject>(this).progress_tint, color);
+    release(env, old);
+    () = msg![env; this setNeedsDisplay];
+}
+- (id)trackTintColor { env.objc.borrow::<UIProgressViewHostObject>(this).track_tint }
+- (())setTrackTintColor:(id)color {
+    retain(env, color);
+    let old = std::mem::replace(&mut env.objc.borrow_mut::<UIProgressViewHostObject>(this).track_tint, color);
+    release(env, old);
+    () = msg![env; this setNeedsDisplay];
+}
+- (id)progressImage { env.objc.borrow::<UIProgressViewHostObject>(this).progress_image }
+- (())setProgressImage:(id)image {
+    retain(env, image);
+    let old = std::mem::replace(&mut env.objc.borrow_mut::<UIProgressViewHostObject>(this).progress_image, image);
+    release(env, old);
+    () = msg![env; this setNeedsDisplay];
+}
+- (id)trackImage { env.objc.borrow::<UIProgressViewHostObject>(this).track_image }
+- (())setTrackImage:(id)image {
+    retain(env, image);
+    let old = std::mem::replace(&mut env.objc.borrow_mut::<UIProgressViewHostObject>(this).track_image, image);
+    release(env, old);
+    () = msg![env; this setNeedsDisplay];
+}
 
 @end
 
@@ -405,8 +579,30 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.alloc_object(this, host_object, &mut env.mem)
 }
 
-- (id)initWithFrame:(CGRect)frame style:(i32)_style {
-    msg_super![env; this initWithFrame:frame]
+- (id)initWithFrame:(CGRect)frame style:(i32)style {
+    env.objc.borrow_mut::<UITableViewHostObject>(this).style = style;
+    let this: id = msg_super![env; this initWithFrame:frame];
+    () = msg![env; this setNeedsDisplay];
+    this
+}
+
+- (i32)style { env.objc.borrow::<UITableViewHostObject>(this).style }
+
+- (())drawRect:(CGRect)_rect {
+    use ui_view::ios5_theme::{fill_solid, rgb};
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    let host = env.objc.borrow::<UITableViewHostObject>(this);
+    if host.background_view != nil { return; }
+    let style = host.style;
+    let bounds: CGRect = msg![env; this bounds];
+    let bg: id = msg![env; this backgroundColor];
+    let color = if bg != nil {
+        crate::frameworks::uikit::ui_color::get_rgba(&env.objc, bg)
+    } else if style == 1 { rgb(0xD6DDE2) } else { rgb(0xFFFFFF) };
+    fill_solid(env, ctx, bounds, color);
+    if bg == nil && style == 1 {
+        ui_view::ios5_theme::draw_grouped_texture(env, ctx, bounds);
+    }
 }
 
 - (())dealloc {
@@ -417,7 +613,31 @@ pub const CLASSES: ClassExports = objc_classes! {
     if header != nil { release(env, header); }
     if footer != nil { release(env, footer); }
     if separator_color != nil { release(env, separator_color); }
+    let background = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    release(env, background);
     msg_super![env; this dealloc]
+}
+
+- (id)backgroundView {
+    env.objc.borrow::<UITableViewHostObject>(this).background_view
+}
+
+- (())setBackgroundView:(id)view {
+    let old = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    if old == view {
+        return;
+    }
+    retain(env, view);
+    env.objc.borrow_mut::<UITableViewHostObject>(this).background_view = view;
+    if old != nil {
+        () = msg![env; old removeFromSuperview];
+        release(env, old);
+    }
+    if view != nil {
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; view setFrame:bounds];
+        () = msg![env; this insertSubview:view atIndex:(0 as NSInteger)];
+    }
 }
 
 - (id)visibleCells {
@@ -447,12 +667,32 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 - (())setFrame:(CGRect)frame {
     () = msg_super![env; this setFrame:frame];
+    let background = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    if background != nil {
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; background setFrame:bounds];
+    }
     maybe_auto_reload(env, this);
 }
 
 - (())setBounds:(CGRect)bounds {
     () = msg_super![env; this setBounds:bounds];
+    let background = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    if background != nil {
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; background setFrame:bounds];
+    }
     maybe_auto_reload(env, this);
+}
+
+- (())layoutSubviews {
+    () = msg_super![env; this layoutSubviews];
+    let background = env.objc.borrow::<UITableViewHostObject>(this).background_view;
+    if background != nil {
+        let bounds: CGRect = msg![env; this bounds];
+        () = msg![env; background setFrame:bounds];
+        () = msg![env; this sendSubviewToBack:background];
+    }
 }
 
 - (())reloadData {
@@ -498,6 +738,9 @@ pub const CLASSES: ClassExports = objc_classes! {
         let row_count: NSInteger = msg![env; data_source
             tableView:this
             numberOfRowsInSection:section];
+        if row_count > 0 && env.objc.borrow::<UITableViewHostObject>(this).style == 1 {
+            y += 20.0;
+        }
         for row in 0..row_count {
             let index_path: id = msg_class![env; NSIndexPath
                 indexPathForRow:(row as NSUInteger)
@@ -513,12 +756,18 @@ pub const CLASSES: ClassExports = objc_classes! {
             }
             retain(env, cell);
 
+            let grouped = env.objc.borrow::<UITableViewHostObject>(this).style == 1;
+            let inset = if grouped { 10.0 } else { 0.0 };
             let frame = CGRect {
-                origin: CGPoint { x: 0.0, y },
-                size: CGSize { width, height: row_height },
+                origin: CGPoint { x: inset, y },
+                size: CGSize { width: (width - 2.0 * inset).max(0.0), height: row_height },
             };
+            let host = env.objc.borrow_mut::<UITableViewCellHostObject>(cell);
+            host.grouped_top = grouped && row == 0;
+            host.grouped_bottom = grouped && row == row_count - 1;
             () = msg![env; cell setFrame:frame];
             () = msg![env; this addSubview:cell];
+            () = msg![env; cell setNeedsDisplay];
 
             y += row_height;
             new_cells.push(cell);
@@ -569,6 +818,101 @@ pub const CLASSES: ClassExports = objc_classes! {
     if data_source == nil { return 0; }
     msg![env; data_source tableView:this numberOfRowsInSection:section]
 }
+- (id)indexPathForRowAtPoint:(CGPoint)point {
+    let cells = env.objc.borrow::<UITableViewHostObject>(this).cells.clone();
+    for (i, cell) in cells.into_iter().enumerate() {
+        let frame: CGRect = msg![env; cell frame];
+        if point.x >= frame.origin.x && point.y >= frame.origin.y
+            && point.x < frame.origin.x + frame.size.width
+            && point.y < frame.origin.y + frame.size.height {
+            return env.objc.borrow::<UITableViewHostObject>(this).cell_index_paths[i];
+        }
+    }
+    nil
+}
+
+- (())touchesBegan:(id)touches withEvent:(id)_event {
+    let host = env.objc.borrow_mut::<UITableViewHostObject>(this);
+    let was_tracking = host.tracked_touch != nil;
+    let old = std::mem::replace(&mut host.pressed_path, nil);
+    host.tracked_touch = nil;
+    release(env, old);
+    let count: NSUInteger = msg![env; touches count];
+    let allows: bool = msg![env; this allowsSelection];
+    if was_tracking || count != 1 || !allows { return; }
+    let touch: id = msg![env; touches anyObject];
+    let point: CGPoint = msg![env; touch locationInView:this];
+    let start: CGPoint = msg![env; touch locationInView:nil];
+    let path: id = msg![env; this indexPathForRowAtPoint:point];
+    retain(env, path);
+    let host = env.objc.borrow_mut::<UITableViewHostObject>(this);
+    host.pressed_path = path;
+    host.tracked_touch = touch;
+    host.touch_start = start;
+}
+
+- (())touchesMoved:(id)touches withEvent:(id)event {
+    let host = env.objc.borrow::<UITableViewHostObject>(this);
+    let (touch, start) = (host.tracked_touch, host.touch_start);
+    if touch != nil {
+        let point: CGPoint = msg![env; touch locationInView:nil];
+        if (point.x - start.x).hypot(point.y - start.y) > 8.0 {
+            let old = std::mem::replace(
+                &mut env.objc.borrow_mut::<UITableViewHostObject>(this).pressed_path, nil,
+            );
+            release(env, old);
+        }
+    }
+    () = msg_super![env; this touchesMoved:touches withEvent:event];
+}
+
+- (())touchesCancelled:(id)touches withEvent:(id)event {
+    let host = env.objc.borrow_mut::<UITableViewHostObject>(this);
+    let old = std::mem::replace(&mut host.pressed_path, nil);
+    host.tracked_touch = nil;
+    release(env, old);
+    () = msg_super![env; this touchesCancelled:touches withEvent:event];
+}
+
+- (())touchesEnded:(id)touches withEvent:(id)event {
+    let host = env.objc.borrow_mut::<UITableViewHostObject>(this);
+    let path = std::mem::replace(&mut host.pressed_path, nil);
+    let touch = std::mem::replace(&mut host.tracked_touch, nil);
+    let start = host.touch_start;
+    () = msg_super![env; this touchesEnded:touches withEvent:event];
+    let allows: bool = msg![env; this allowsSelection];
+    let ended: bool = msg![env; touches containsObject:touch];
+    if path != nil && touch != nil && ended && allows {
+        let point: CGPoint = msg![env; touch locationInView:this];
+        let end: CGPoint = msg![env; touch locationInView:nil];
+        let hit: id = msg![env; this indexPathForRowAtPoint:point];
+        let same: bool = msg![env; path isEqual:hit];
+        if same && (end.x - start.x).hypot(end.y - start.y) <= 8.0 {
+            let delegate: id = msg![env; this delegate];
+            let sel = env.objc.register_host_selector(
+                "tableView:willSelectRowAtIndexPath:".into(), &mut env.mem,
+            );
+            let responds: bool = msg![env; delegate respondsToSelector:sel];
+            let selected: id = if responds {
+                msg![env; delegate tableView:this willSelectRowAtIndexPath:path]
+            } else { path };
+            if selected != nil {
+                retain(env, selected);
+                () = msg![env; this selectRowAtIndexPath:selected animated:false scrollPosition:0i32];
+                let sel = env.objc.register_host_selector(
+                    "tableView:didSelectRowAtIndexPath:".into(), &mut env.mem,
+                );
+                let responds: bool = msg![env; delegate respondsToSelector:sel];
+                if responds {
+                    () = msg![env; delegate tableView:this didSelectRowAtIndexPath:selected];
+                }
+                release(env, selected);
+            }
+        }
+    }
+    release(env, path);
+}
+
 - (id)cellForRowAtIndexPath:(id)path {
     if path == nil { return nil; }
     let cell_paths = env.objc.borrow::<UITableViewHostObject>(this).cell_index_paths.clone();
@@ -595,15 +939,45 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
     nil
 }
-- (id)indexPathForSelectedRow { nil }
-- (id)indexPathsForSelectedRows { nil }
-- (())selectRowAtIndexPath:(id)_path animated:(bool)_animated scrollPosition:(i32)_pos {}
-- (())deselectRowAtIndexPath:(id)_path animated:(bool)_animated {}
+- (id)indexPathForSelectedRow {
+    env.objc.borrow::<UITableViewHostObject>(this).selected_path
+}
+- (id)indexPathsForSelectedRows {
+    let path: id = msg![env; this indexPathForSelectedRow];
+    if path == nil { return nil; }
+    msg_class![env; NSArray arrayWithObject:path]
+}
+- (())selectRowAtIndexPath:(id)path animated:(bool)animated scrollPosition:(i32)_pos {
+    if path != nil {
+        let cell: id = msg![env; this cellForRowAtIndexPath:path];
+        if cell == nil { return; }
+    }
+    retain(env, path);
+    let old = std::mem::replace(
+        &mut env.objc.borrow_mut::<UITableViewHostObject>(this).selected_path, path,
+    );
+    let old_cell: id = msg![env; this cellForRowAtIndexPath:old];
+    () = msg![env; old_cell setSelected:false animated:animated];
+    let cell: id = msg![env; this cellForRowAtIndexPath:path];
+    () = msg![env; cell setSelected:true animated:animated];
+    release(env, old);
+}
+- (())deselectRowAtIndexPath:(id)path animated:(bool)animated {
+    let selected: id = msg![env; this indexPathForSelectedRow];
+    let equal: bool = msg![env; selected isEqual:path];
+    if equal {
+        () = msg![env; this selectRowAtIndexPath:nil animated:animated scrollPosition:0i32];
+    }
+}
 - (())scrollToRowAtIndexPath:(id)_path atScrollPosition:(i32)_pos animated:(bool)_animated {}
 - (())setEditing:(bool)_editing animated:(bool)_animated {}
 - (bool)isEditing { false }
-- (())setAllowsSelection:(bool)_allows {}
-- (bool)allowsSelection { true }
+- (())setAllowsSelection:(bool)allows {
+    env.objc.borrow_mut::<UITableViewHostObject>(this).allows_selection = allows;
+}
+- (bool)allowsSelection {
+    env.objc.borrow::<UITableViewHostObject>(this).allows_selection
+}
 - (())setAllowsMultipleSelection:(bool)_allows {}
 - (())setRowHeight:(f32)height {
     env.objc.borrow_mut::<UITableViewHostObject>(this).row_height = height;

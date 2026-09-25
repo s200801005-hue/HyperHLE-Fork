@@ -489,13 +489,15 @@ impl CGBitmapContextDrawer<'_> {
         untransformed_rect: CGRect,
     ) -> impl Iterator<Item = ((i32, i32), (f32, f32))> {
         let bounding_rect = self.transform.apply_to_rect(untransformed_rect);
-        let x_start = bounding_rect.origin.x.round().max(0.0) as GuestUSize;
-        let y_start = bounding_rect.origin.y.round().max(0.0) as GuestUSize;
+        // Enclose all candidate pixel centres, including half-pixel edges.
+        // The inverse-transform check below rejects centres outside the rect.
+        let x_start = bounding_rect.origin.x.floor().max(0.0) as GuestUSize;
+        let y_start = bounding_rect.origin.y.floor().max(0.0) as GuestUSize;
         let x_end = (bounding_rect.origin.x + bounding_rect.size.width)
-            .round()
-            .min(self.width() as f32) as GuestUSize;
+        .ceil()
+        .min(self.width() as f32) as GuestUSize;
         let y_end = (bounding_rect.origin.y + bounding_rect.size.height)
-            .round()
+            .ceil()
             .min(self.height() as f32) as GuestUSize;
         let inverse_transform = self.transform.invert();
 
@@ -555,6 +557,63 @@ pub fn get_data(objc: &ObjC, context: CGContextRef) -> (GuestUSize, GuestUSize, 
     let host_obj = objc.borrow::<CGContextHostObject>(context);
     let CGContextSubclass::CGBitmapContext(bitmap_data) = host_obj.subclass;
     (bitmap_data.width, bitmap_data.height, bitmap_data.data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::frameworks::core_graphics::CGSize;
+
+    #[test]
+    fn adjacent_strips_cover_each_pixel_once() {
+        for scale in [1.0, 2.0] {
+            for thickness in [0.5, 1.0] {
+                for vertical in [false, true] {
+                    let mut pixels = [0u8; 4 * 4 * 4];
+                    let drawer = CGBitmapContextDrawer {
+                        bitmap_info: CGBitmapContextData {
+                            width: 4,
+                            height: 4,
+                            ..Default::default()
+                        },
+                        rgb_fill_color: (1.0, 1.0, 1.0, 1.0),
+                        transform: CGAffineTransform {
+                            a: scale,
+                            d: scale,
+                            ..CGAffineTransformIdentity
+                        },
+                        pixels: &mut pixels,
+                    };
+                    let mut hits = [0u8; 16];
+                    for i in 0..(2.0 / thickness) as usize {
+                        let offset = i as f32 * thickness;
+                        let rect = if vertical {
+                            CGRect {
+                                origin: CGPoint { x: offset, y: 0.0 },
+                                size: CGSize { width: thickness, height: 2.0 },
+                            }
+                        } else {
+                            CGRect {
+                                origin: CGPoint { x: 0.0, y: offset },
+                                size: CGSize { width: 2.0, height: thickness },
+                            }
+                        };
+                        for ((x, y), _) in drawer.iter_transformed_pixels(rect) {
+                            hits[(y * 4 + x) as usize] += 1;
+                        }
+                    }
+                    let edge = (2.0 * scale) as usize;
+                    for y in 0..4 {
+                        for x in 0..4 {
+                            let expected = u8::from(x < edge && y < edge);
+                            assert_eq!(hits[y * 4 + x], expected,
+                                "scale={scale}, thickness={thickness}, vertical={vertical}, x={x}, y={y}");
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 pub const FUNCTIONS: FunctionExports = &[

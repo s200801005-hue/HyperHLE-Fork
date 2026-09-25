@@ -97,6 +97,8 @@ fn layout(env: &mut Environment, this: id) {
 
     let seg_w = bounds.size.width / count as f32;
     let h = bounds.size.height;
+    use crate::frameworks::uikit::ui_view::ios5_theme::{rgb, set_surface, NAVIGATION};
+    set_surface(env, this, CORNER_RADIUS, &NAVIGATION, rgb(0x405F8A));    
 
     // Selection view
     if selection_view != nil {
@@ -126,6 +128,10 @@ fn layout(env: &mut Environment, this: id) {
             0.0
         };
         () = msg![env; layer setCornerRadius:r];
+        set_surface(env, selection_view, r, &[
+            (0.0, rgb(0x314767)), (0.33, rgb(0x405F8A)),
+            (0.67, rgb(0x506D94)), (1.0, rgb(0x798EAC)),
+        ], rgb(0x314767));        
 
         if corner_filler != nil {
             let hidden = selected_index < 0 || (selected_index as u32) >= count;
@@ -165,6 +171,10 @@ fn layout(env: &mut Environment, this: id) {
                     }
                 };
                 () = msg![env; corner_filler setFrame:filler_rect];
+                set_surface(env, corner_filler, 0.0, &[
+                    (0.0, rgb(0x314767)), (0.33, rgb(0x405F8A)),
+                    (0.67, rgb(0x506D94)), (1.0, rgb(0x798EAC)),
+                ], (0.0, 0.0, 0.0, 0.0));                
             }
         }
     }
@@ -211,6 +221,9 @@ fn layout(env: &mut Environment, this: id) {
                     msg_class![env; UIColor colorWithRed:(0.2f32) green:(0.2f32) blue:(0.2f32) alpha:1.0f32]
                 };
                 () = msg![env; sub setTextColor:color];
+                let shadow: id = msg_class![env; UIColor colorWithWhite:0.0f32 alpha:0.5f32];
+                () = msg![env; sub setShadowColor:shadow];
+                () = msg![env; sub setShadowOffset:(CGSize { width: 0.0, height: -1.0 })];                
             }
         }
     }

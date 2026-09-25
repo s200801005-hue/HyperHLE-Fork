@@ -3,8 +3,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/.
  */
-//! `UIAlertView` — shows an SDL2 message box dialog.
-
+//! `UIAlertView` — themed, asynchronous UIKit modal panel.
 use crate::frameworks::core_graphics::cg_affine_transform::CGAffineTransform;
 use crate::frameworks::core_graphics::{CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::{ns_string, NSInteger, NSUInteger};
@@ -12,8 +11,7 @@ use crate::objc::{
     id, msg, msg_class, msg_super, nil, objc_classes, release, retain, ClassExports, HostObject,
     NSZonePtr,
 };
-use crate::window;
-
+use crate::frameworks::uikit::ui_view::ios5_theme;
 pub type UIAlertViewStyle = NSInteger;
 pub const UIAlertViewStyleDefault: UIAlertViewStyle = 0;
 pub const UIAlertViewStyleSecureTextInput: UIAlertViewStyle = 1;
@@ -28,6 +26,7 @@ pub struct UIAlertViewHostObject {
     button_titles: id,
     cancel_button_index: NSInteger,
     visible: bool,
+    overlay: id,
     alert_view_style: UIAlertViewStyle,
     tag: NSInteger,
 }
@@ -47,6 +46,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         button_titles:       nil,
         cancel_button_index: -1,
         visible:             false,
+        overlay:             nil,
         alert_view_style:    UIAlertViewStyleDefault,
         tag:                 0,
     });
@@ -214,73 +214,35 @@ pub const CLASSES: ClassExports = objc_classes! {
     let _: () = msg![env; this setFrame:new_frame];
 }
 
+
+- (())_touchHLEPanelButton:(id)sender {
+    let index: NSInteger = msg![env; sender tag];
+    () = msg![env; this dismissWithClickedButtonIndex:index animated:false];
+}
+
 - (())show {
-    log!("UIAlertView show (SDL2 dialog)");
-    env.objc.borrow_mut::<UIAlertViewHostObject>(this).visible = true;
+    if env.objc.borrow::<UIAlertViewHostObject>(this).visible { return; }
 
-    let (title, message, buttons, cancel_index) = {
-        let h = env.objc.borrow::<UIAlertViewHostObject>(this);
-        (h.title, h.message, h.button_titles, h.cancel_button_index)
-    };
-
-    // Raw (un-substituted) strings, used to decide whether the alert
-    // actually has anything to show the user.
-    let raw_title: String = if title != nil {
-        ns_string::to_rust_string(env, title).into_owned()
-    } else { String::new() };
-    let raw_message: String = if message != nil {
-        ns_string::to_rust_string(env, message).into_owned()
-    } else { String::new() };
-
-    // touchHLE renders UIAlertView as a *blocking* SDL2 system dialog,
-    // whereas real iOS `-[UIAlertView show]` is asynchronous and returns
-    // immediately. Some apps (notably Outfit7 titles like Talking Angela)
-    // create a content-less alert — empty/`nil` title *and* message — as a
-    // transient placeholder that they dismiss programmatically once some
-    // background work finishes. Presenting a blocking modal for such an
-    // alert freezes the app behind an empty dialog box that the user can
-    // never meaningfully act on. Since there is nothing to display, skip
-    // the native dialog and simulate an immediate dismissal so the guest's
-    // run loop keeps going (matching iOS's non-blocking semantics). Any
-    // delegate callbacks are still delivered via dismissWithClickedButtonIndex.
-    if raw_title.trim().is_empty() && raw_message.trim().is_empty() {
-        log!(
-            "UIAlertView show: empty title and message; \
-             skipping blocking SDL2 dialog and dismissing asynchronously"
-        );
-        let dismiss_index = if cancel_index >= 0 { cancel_index } else { 0 };
-        let _: () = msg![env; this dismissWithClickedButtonIndex:dismiss_index animated:false];
-        return;
-    }
-
-    let title_str: String = if raw_title.is_empty() { "Alert".into() } else { raw_title };
-    let message_str: String = raw_message;
-
-    let btn_count: NSUInteger = msg![env; buttons count];
-    let mut btn_strings: Vec<String> = Vec::new();
-    for i in 0..btn_count {
-        let btn: id = msg![env; buttons objectAtIndex:i];
-        btn_strings.push(if btn != nil {
-            ns_string::to_rust_string(env, btn).into_owned()
-        } else { format!("Button {}", i) });
-    }
-    if btn_strings.is_empty() { btn_strings.push("OK".into()); }
-
-    let btn_refs: Vec<&str> = btn_strings.iter().map(|s| s.as_str()).collect();
-    let clicked = window::show_alert_dialog(env, &title_str, &message_str, &btn_refs);
-
-    let dismiss_index = if clicked >= 0 && (clicked as NSUInteger) < btn_count {
-        clicked as NSInteger
-    } else if cancel_index >= 0 {
-        cancel_index
-    } else { 0 };
-
-    let _: () = msg![env; this dismissWithClickedButtonIndex:dismiss_index animated:false];
+    let (title, message, buttons) = {     
+         let h = env.objc.borrow::<UIAlertViewHostObject>(this);
+        (h.title, h.message, h.button_titles)    };
+    
+    let action = env.objc.register_host_selector("_touchHLEPanelButton:".into(), &mut env.mem);
+    let overlay = ios5_theme::present_panel(env, this, action, title, message, buttons, -1, false);
+    if overlay == nil { return; }
+    retain(env, this);
+    let host = env.objc.borrow_mut::<UIAlertViewHostObject>(this);
+    host.overlay = overlay;
+    host.visible = true;    
 }
 
 - (())dismissWithClickedButtonIndex:(NSInteger)button_index animated:(bool)_animated {
-    env.objc.borrow_mut::<UIAlertViewHostObject>(this).visible = false;
-    let delegate = env.objc.borrow::<UIAlertViewHostObject>(this).delegate;
+    let host = env.objc.borrow_mut::<UIAlertViewHostObject>(this);
+    if !host.visible { return; }
+    host.visible = false;
+    let overlay = std::mem::replace(&mut host.overlay, nil);
+    () = msg![env; overlay removeFromSuperview];
+    release(env, overlay);    let delegate = env.objc.borrow::<UIAlertViewHostObject>(this).delegate;
 
     // Честно проверяем, не был ли делегат удален (isa != 0)
     if delegate != nil {
@@ -300,6 +262,7 @@ pub const CLASSES: ClassExports = objc_classes! {
             }
         }
     }
+    release(env, this);
 }
 
 - (id)description {

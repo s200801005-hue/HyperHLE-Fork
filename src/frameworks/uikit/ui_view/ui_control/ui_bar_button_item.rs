@@ -231,9 +231,9 @@ pub const CLASSES: ClassExports = objc_classes! {
         action
     );
 
-    let font: id = msg_class![env; UIFont systemFontOfSize:17_f32];
-    let title_color: id = msg_class![env; UIColor blackColor];
-    let item_bg_color: id = msg_class![env; UIColor whiteColor];
+    let font: id = msg_class![env; UIFont boldSystemFontOfSize:12_f32];
+    let title_color: id = msg_class![env; UIColor whiteColor];
+    let item_bg_color: id = msg_class![env; UIColor clearColor];
 
     let frame = CGRect {
         origin: CGPoint { x: 0.0, y: 0.0 },
@@ -364,8 +364,8 @@ pub const CLASSES: ClassExports = objc_classes! {
         _ => {
             let font: id = msg_class![env; UIFont systemFontOfSize:17_f32];
             let title_color: id = msg_class![env; UIColor blackColor];
-            let item_bg_color: id = msg_class![env; UIColor whiteColor];
-
+            let title_color: id = msg_class![env; UIColor whiteColor];
+            let item_bg_color: id = msg_class![env; UIColor clearColor];
             let title_label: id = msg_class![env; UILabel new];
             let title_label: id = msg![env; title_label initWithFrame:frame];
             () = msg![env; title_label setTextAlignment:UITextAlignmentCenter];
@@ -527,7 +527,27 @@ pub const CLASSES: ClassExports = objc_classes! {
     }
 }
 
+- (())drawRect:(CGRect)_rect {
+    use crate::frameworks::uikit::ui_view::ios5_theme;
+    let host = env.objc.borrow::<UIBarButtonItemHostObject>(this);
+    if host.custom_view != nil || matches!(host.style, UIBarButtonItemStyle::Plain)
+        || matches!(host.system_item, UIBarButtonSystemItem::FlexibleSpace | UIBarButtonSystemItem::FixedSpace) {
+        return;
+    }
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    let bounds: CGRect = msg![env; this bounds];
+    let highlighted: bool = msg![env; this isHighlighted];
+    ios5_theme::draw_navigation_button(env, ctx,
+        ios5_theme::inset_rect(bounds, 3.0, 2.0), (0.36, 0.46, 0.62, 1.0), false, highlighted);
+}
+
+- (())setHighlighted:(bool)highlighted {
+    () = msg_super![env; this setHighlighted:highlighted];
+    () = msg![env; this setNeedsDisplay];
+}
+
 - (())layoutSubviews {
+      () = msg![env; this setNeedsDisplay];  
     // 1. Опять же, ограничиваем scope неизменяемого заимствования.
     let (custom_view, label) = {
         let host = env.objc.borrow::<UIBarButtonItemHostObject>(this);
@@ -543,17 +563,15 @@ pub const CLASSES: ClassExports = objc_classes! {
         () = msg![env; custom_view setFrame:bounds];
     } else if label != nil {
         () = msg![env; label setFrame:bounds];
+        let shadow: id = msg_class![env; UIColor colorWithWhite:0.0f32 alpha:0.5f32];
+        () = msg![env; label setShadowColor:shadow];
+        () = msg![env; label setShadowOffset:(CGSize { width: 0.0, height: -1.0 })];    
     }
 }
 
 - (SEL)action {
-    match env.objc.borrow::<UIBarButtonItemHostObject>(this).action {
-        Some(sel) => sel,
-        None => {
-            log!("Warning: UIBarButtonItem has no action set!");
-            env.objc.lookup_selector("undefinedSelector").unwrap()
-        }
-    }
+    env.objc.borrow::<UIBarButtonItemHostObject>(this).action
+        .unwrap_or(SEL::null())
 }
 
 - (())setAction:(SEL)action {

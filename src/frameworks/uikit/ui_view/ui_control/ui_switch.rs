@@ -283,6 +283,22 @@ pub const CLASSES: ClassExports = objc_classes! {
     set_radius(env, label_on, label_on_radius);
     set_radius(env, label_off, label_off_radius);
     set_radius(env, thumb, thumb_radius);
+    use crate::frameworks::uikit::ui_view::ios5_theme::{rgb, set_surface};
+    let stops = if is_on {
+        [(0.0, rgb(0x405F8A)), (0.33, rgb(0x278AF2)), (1.0, rgb(0x3EC9FB))]
+    } else {
+        [(0.0, rgb(0x9A9A9B)), (0.33, rgb(0xC4C4C7)), (1.0, rgb(0xF7F7F7))]
+    };
+    set_surface(env, back, back_radius, &stops, rgb(0x737374));
+    set_surface(env, thumb, thumb_radius,
+        &[(0.0, rgb(0xFFFFFF)), (0.5, rgb(0xE9E9EB)), (1.0, rgb(0xB8B8BD))],
+        rgb(0x737374));
+    let clear: id = msg_class![env; UIColor clearColor];
+    () = msg![env; label_on setBackgroundColor:clear];
+    () = msg![env; label_off setBackgroundColor:clear];
+    let shadow: id = msg_class![env; UIColor colorWithWhite:0.0f32 alpha:0.5f32];
+    () = msg![env; label_on setShadowColor:shadow];
+    () = msg![env; label_on setShadowOffset:(CGSize { width: 0.0, height: -1.0 })];    
 }
 
 - (())dealloc {

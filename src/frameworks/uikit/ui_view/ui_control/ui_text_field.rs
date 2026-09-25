@@ -219,9 +219,40 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())layoutSubviews {
-    let text_label = env.objc.borrow::<UITextFieldHostObject>(this).text_label;
+    let host = env.objc.borrow::<UITextFieldHostObject>(this);
+    let (text_label, style) = (host.text_label, host.border_style);
     let bounds: CGRect = msg![env; this bounds];
-    let _: () = msg![env; text_label setFrame:bounds];
+ let rect = if style == 0 { bounds } else {
+        crate::frameworks::uikit::ui_view::ios5_theme::inset_rect(bounds, 7.0, 2.0)
+    };
+    () = msg![env; text_label setFrame:rect];
+    () = msg![env; this setNeedsDisplay];
+}
+
+- (())drawRect:(CGRect)_rect {
+    use crate::frameworks::uikit::ui_view::ios5_theme::{draw_surface, rgb};
+    let ctx = crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext(env);
+    let bounds: CGRect = msg![env; this bounds];
+    let enabled: bool = msg![env; this isEnabled];
+    let host = env.objc.borrow::<UITextFieldHostObject>(this);
+    let style = host.border_style;
+    let image = if !enabled && host.disabled_background != nil {
+        host.disabled_background
+    } else { host.background };
+    if image != nil {
+        () = msg![env; image drawInRect:bounds];
+    } else if style != 0 {
+        let radius = if style == 3 { 8.0 } else { 0.0 };
+        draw_surface(env, ctx, bounds, radius, &[
+            (0.0, rgb(0x9A9A9B)), (0.08, rgb(0xE4E4E7)),
+            (0.2, rgb(0xF7F7F7)), (1.0, rgb(0xFFFFFF)),
+        ], rgb(0xA8A8A8));
+    }
+}
+
+- (())setEnabled:(bool)enabled {
+    () = msg_super![env; this setEnabled:enabled];
+    () = msg![env; this setNeedsDisplay];    
 }
 
 - (id)text {
@@ -305,14 +336,18 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (UITextBorderStyle)borderStyle { env.objc.borrow::<UITextFieldHostObject>(this).border_style }
-- (())setBorderStyle:(UITextBorderStyle)style { env.objc.borrow_mut::<UITextFieldHostObject>(this).border_style = style; }
 
+- (())setBorderStyle:(UITextBorderStyle)style {
+    env.objc.borrow_mut::<UITextFieldHostObject>(this).border_style = style;
+    () = msg![env; this layoutSubviews];
+}
 - (id)background { env.objc.borrow::<UITextFieldHostObject>(this).background }
 - (())setBackground:(id)background {
     let old = env.objc.borrow::<UITextFieldHostObject>(this).background;
     release(env, old);
     retain(env, background);
     env.objc.borrow_mut::<UITextFieldHostObject>(this).background = background;
+    () = msg![env; this setNeedsDisplay];    
 }
 
 - (id)disabledBackground { env.objc.borrow::<UITextFieldHostObject>(this).disabled_background }
@@ -321,6 +356,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     release(env, old);
     retain(env, background);
     env.objc.borrow_mut::<UITextFieldHostObject>(this).disabled_background = background;
+    () = msg![env; this setNeedsDisplay];   
 }
 
 - (UITextFieldViewMode)clearButtonMode { env.objc.borrow::<UITextFieldHostObject>(this).clear_button_mode }

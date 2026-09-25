@@ -7,8 +7,7 @@
 
 use crate::frameworks::foundation::ns_string;
 use crate::objc::{
-    id, msg, msg_class, nil, objc_classes, release, retain, ClassExports, HostObject, NSZonePtr,
-};
+    id, msg, msg_class, msg_super, nil, objc_classes, release, retain, ClassExports, HostObject, NSZonePtr,};
 
 // MARK: - ABPersonSortOrdering / ABPersonCompositeNameFormat constants
 
@@ -38,9 +37,6 @@ struct ABPeoplePickerNavigationControllerHostObject {
     predicate_for_displayed_results: id,
 }
 impl HostObject for ABPeoplePickerNavigationControllerHostObject {}
-
-struct EmptyHostObject;
-impl HostObject for EmptyHostObject {}
 
 pub const CLASSES: ClassExports = objc_classes! {
 
@@ -242,11 +238,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @implementation ABUnknownPersonViewController: UIViewController
 
-+ (id)allocWithZone:(NSZonePtr)_zone {
-    env.objc.alloc_object(this, Box::new(EmptyHostObject), &mut env.mem)
-}
-
-- (id)init { this }
+- (id)init { msg_super![env; this init] }
 
 - (())setDisplayedPerson:(id)_person {
     log!("TODO: ABUnknownPersonViewController setDisplayedPerson: — ignored");
@@ -260,10 +252,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 }
 
 - (())setTitle:(id)title {
-    log_dbg!(
-        "ABUnknownPersonViewController setTitle: {:?}",
-        if title != nil { ns_string::to_rust_string(env, title).into_owned() } else { "(null)".into() }
-    );
+    () = msg_super![env; this setTitle:title];
 }
 
 - (())setMessage:(id)message {
@@ -292,11 +281,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @implementation ABPersonViewController: UIViewController
 
-+ (id)allocWithZone:(NSZonePtr)_zone {
-    env.objc.alloc_object(this, Box::new(EmptyHostObject), &mut env.mem)
-}
-
-- (id)init { this }
+- (id)init { msg_super![env; this init] }
 
 - (())setDisplayedPerson:(id)_person {
     log!("TODO: ABPersonViewController setDisplayedPerson: — ignored");
@@ -332,11 +317,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 @implementation ABNewPersonViewController: UIViewController
 
-+ (id)allocWithZone:(NSZonePtr)_zone {
-    env.objc.alloc_object(this, Box::new(EmptyHostObject), &mut env.mem)
-}
-
-- (id)init { this }
+- (id)init { msg_super![env; this init] }
 
 - (())setDisplayedPerson:(id)_person {
     log!("TODO: ABNewPersonViewController setDisplayedPerson: — ignored");

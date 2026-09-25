@@ -7,12 +7,15 @@
 //! `UIButton`.
 
 use super::{UIControlState, UIControlStateNormal};
+use crate::frameworks::core_graphics::cg_context::CGContextRef;
 use crate::frameworks::core_graphics::{CGFloat, CGPoint, CGRect, CGSize};
 use crate::frameworks::foundation::ns_string::{from_rust_string, get_static_str, to_rust_string};
 use crate::frameworks::foundation::{NSInteger, NSUInteger};
 use crate::frameworks::uikit::ui_font::{
     UITextAlignmentCenter, UITextAlignmentLeft, UITextAlignmentRight,
 };
+use crate::frameworks::uikit::ui_graphics::UIGraphicsGetCurrentContext;
+use crate::frameworks::uikit::ui_view::ios5_theme;
 use crate::mem::SafeRead;
 use crate::objc::{
     autorelease, id, impl_HostObject_with_superclass, msg, msg_class, msg_super, nil, objc_classes,
@@ -148,6 +151,9 @@ fn update(env: &mut Environment, this: id) {
     // Without proper side-by-side layout the title would overlap the image.
     let hide_title = image != nil;
     () = msg![env; title_label setHidden:hide_title];
+    if env.objc.borrow::<UIButtonHostObject>(this).type_ == UIButtonTypeRoundedRect {
+    () = msg![env; this setNeedsDisplay];
+    }
 }
 
 fn init_common(env: &mut Environment, this: id) -> id {
@@ -183,15 +189,17 @@ fn init_common(env: &mut Environment, this: id) -> id {
 }
 
 fn set_type(env: &mut Environment, button: id, type_: UIButtonType) {
+    env.objc.borrow_mut::<UIButtonHostObject>(button).type_ = type_;
     match type_ {
         UIButtonTypeCustom => (),
         UIButtonTypeRoundedRect => {
-            let bg_color: id = msg_class![env; UIColor whiteColor];
+            // The glossy background and rounded corners are drawn in drawRect:.
+            let bg_color: id = msg_class![env; UIColor clearColor];
             () = msg![env; button setBackgroundColor:bg_color];
-            let text_color: id = msg_class![env; UIColor blackColor];
+            let text_color: id = msg_class![env; UIColor
+            colorWithRed:(0.20f32) green:(0.31f32) blue:(0.52f32) alpha:1.0f32];
             () = msg![env; button setTitleColor:text_color forState:UIControlStateNormal];
-            let layer: id = msg![env; button layer];
-            () = msg![env; layer setCornerRadius:(10.0 as CGFloat)];
+            () = msg![env; button setNeedsDisplay];
         }
         UIButtonTypeDetailDisclosure | UIButtonTypeInfoLight | UIButtonTypeInfoDark => {
             // System "info" buttons (types 2, 3, 4).
@@ -329,7 +337,40 @@ pub const CLASSES: ClassExports = objc_classes! {
     msg_super![env; this dealloc]
 }
 
+// MARK: - Drawing
+
+- (())drawRect:(CGRect)_rect {
+    if env.objc.borrow::<UIButtonHostObject>(this).type_ != UIButtonTypeRoundedRect {
+        return;
+    }
+    let background: id = msg![env; this currentBackgroundImage];
+    if background != nil {
+        return;
+    }
+    let ctx: CGContextRef = UIGraphicsGetCurrentContext(env);
+    let mut bounds: CGRect = msg![env; this bounds];
+    bounds.origin = CGPoint { x: 0.0, y: 0.0 };
+    let highlighted: bool = msg![env; this isHighlighted];
+    ios5_theme::draw_rounded_glossy_button(
+        env, ctx, bounds, (0.90, 0.90, 0.92, 1.0), 10.0, highlighted,
+    );
+}
+
 // MARK: - Layout
+
+- (())setFrame:(CGRect)frame {
+    () = msg_super![env; this setFrame:frame];
+    if env.objc.borrow::<UIButtonHostObject>(this).type_ == UIButtonTypeRoundedRect {
+        () = msg![env; this setNeedsDisplay];
+    }
+}
+
+- (())setBounds:(CGRect)bounds {
+    () = msg_super![env; this setBounds:bounds];
+    if env.objc.borrow::<UIButtonHostObject>(this).type_ == UIButtonTypeRoundedRect {
+        () = msg![env; this setNeedsDisplay];
+    }
+}
 
 - (())layoutSubviews {
     let host_object = env.objc.borrow_mut::<UIButtonHostObject>(this);

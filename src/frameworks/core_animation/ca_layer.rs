@@ -68,6 +68,7 @@ pub(crate) struct CALayerHostObject {
     /// and read it back observe the right values.
     pub(super) sublayer_transform: CATransform3D,
     pub(super) hidden: bool,
+    pub(super) masks_to_bounds: bool,
     pub(super) opaque: bool,
     pub(super) opacity: f32,
     pub(super) background_color: Option<CGColorHostObject>,
@@ -393,6 +394,7 @@ pub const CLASSES: ClassExports = objc_classes! {
         transform_3d: CATransform3DIdentity,
         sublayer_transform: CATransform3DIdentity,
         hidden: false,
+        masks_to_bounds: false,
         opaque: false,
         opacity: 1.0,
         background_color: None,
@@ -772,6 +774,11 @@ pub const CLASSES: ClassExports = objc_classes! {
         let hidden: id = msg_class![env; NSNumber numberWithBool:hidden];
         add_default_implied_basic_animation(env, this, "hidden", old_hidden, hidden);
     }
+}
+
+- (bool)masksToBounds { env.objc.borrow::<CALayerHostObject>(this).masks_to_bounds }
+- (())setMasksToBounds:(bool)value {
+    env.objc.borrow_mut::<CALayerHostObject>(this).masks_to_bounds = value;
 }
 
 - (bool)isOpaque { env.objc.borrow::<CALayerHostObject>(this).opaque }
@@ -1232,6 +1239,10 @@ fn render_layer_in_context(env: &mut Environment, layer: id, ctx: CGContextRef) 
             -anchor_point.x * bounds.size.width,
             -anchor_point.y * bounds.size.height,
         );
+    }
+
+       if env.objc.borrow::<CALayerHostObject>(layer).masks_to_bounds {
+        crate::frameworks::core_graphics::cg_context::CGContextClipToRect(env, ctx, bounds);
     }
 
     // Solid background fill.

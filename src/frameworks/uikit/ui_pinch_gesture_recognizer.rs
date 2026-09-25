@@ -13,16 +13,17 @@
 //! Apple documentation:
 //! - <https://developer.apple.com/documentation/uikit/uipinchgesturerecognizer>
 
-use crate::frameworks::core_graphics::CGFloat;
-use crate::objc::{id, objc_classes, ClassExports, HostObject, NSZonePtr};
+use super::ui_gesture_recognizer::UIGestureRecognizerHostObject;
+use crate::objc::{id, impl_HostObject_with_superclass, objc_classes, ClassExports, NSZonePtr};
 
 // MARK: - UIPinchGestureRecognizer host object
 #[derive(Default)]
 struct UIPinchGestureRecognizerHostObject {
+    superclass: UIGestureRecognizerHostObject, 
     scale: CGFloat,
     velocity: CGFloat,
 }
-impl HostObject for UIPinchGestureRecognizerHostObject {}
+impl_HostObject_with_superclass!(UIPinchGestureRecognizerHostObject);
 
 pub const CLASSES: ClassExports = objc_classes! {
 
@@ -36,6 +37,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (id)allocWithZone:(NSZonePtr)_zone {
     let host_object = Box::new(UIPinchGestureRecognizerHostObject {
+         superclass: Default::default(),
         scale: 1.0,
         velocity: 0.0,
     });

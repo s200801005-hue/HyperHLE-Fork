@@ -26,12 +26,14 @@
 //! Эта реализация повторяет структуру `UIPinchGestureRecognizer`.
 
 use crate::frameworks::core_graphics::CGFloat;
-use crate::objc::{id, objc_classes, ClassExports, HostObject, NSZonePtr};
+use super::ui_gesture_recognizer::UIGestureRecognizerHostObject;
+use crate::objc::{id, impl_HostObject_with_superclass, objc_classes, ClassExports, NSZonePtr};
 
 // MARK: - UIRotationGestureRecognizer host object
 
 #[derive(Default)]
 struct UIRotationGestureRecognizerHostObject {
+    superclass: UIGestureRecognizerHostObject,
     /// Текущий угол поворота в радианах относительно начала распознавания
     /// жеста. По умолчанию 0.
     rotation: CGFloat,
@@ -40,7 +42,7 @@ struct UIRotationGestureRecognizerHostObject {
     /// эмулирующий распознавание, мог его обновлять.
     velocity: CGFloat,
 }
-impl HostObject for UIRotationGestureRecognizerHostObject {}
+impl_HostObject_with_superclass!(UIRotationGestureRecognizerHostObject);
 
 pub const CLASSES: ClassExports = objc_classes! {
 
@@ -54,6 +56,7 @@ pub const CLASSES: ClassExports = objc_classes! {
 
 + (id)allocWithZone:(NSZonePtr)_zone {
     let host_object = Box::new(UIRotationGestureRecognizerHostObject {
+        superclass: Default::default(),    
         rotation: 0.0,
         velocity: 0.0,
     });
