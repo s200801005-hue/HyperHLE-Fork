@@ -11,6 +11,7 @@ use crate::frameworks::core_graphics::{cg_image, CGRect};
 use crate::frameworks::foundation::ns_string::{self, to_rust_string};
 use crate::frameworks::foundation::NSUInteger;
 use crate::frameworks::uikit::ui_view::UIViewHostObject;
+use crate::fs::GuestPath;
 use crate::image::Image;
 use crate::objc::{
     id, impl_HostObject_with_superclass, msg, msg_class, msg_super, nil, objc_classes, release,
@@ -187,6 +188,16 @@ pub const CLASSES: ClassExports = objc_classes! {
         String::new()
     };
     log!("UIWebView loadRequest: {}", url_string);
+
+    // Apps often hand us an NSURL built from a bare path (or whose
+    // `description` lacks the scheme). Normalise it to a `file://` URL,
+    // matching what `[NSURL description]` returns on real iOS, so the
+    // desktop bridge's URL guards accept it.
+    let url_string = if url_string.contains("://") || !url_string.starts_with('/') {
+        url_string
+    } else {
+        format!("file://{}", url_string)
+    };
 
     // Push current URL onto back stack before navigating.
     let old_url = env.objc.borrow::<UIWebViewHostObject>(this).current_url;
@@ -799,6 +810,26 @@ fn find_chromium_binary() -> Option<PathBuf> {
             return Some(p);
         }
     }
+    // Windows: the common Chrome / Edge install locations. Checked through
+    // environment variables so unusual install roots still resolve.
+    #[cfg(windows)]
+    {
+        for var in ["ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"] {
+            let Ok(dir) = std::env::var(var) else {
+                continue;
+            };
+            for rel in [
+                "Google/Chrome/Application/chrome.exe",
+                "Microsoft/Edge/Application/msedge.exe",
+                "Chromium/Application/chrome.exe",
+            ] {
+                let p = PathBuf::from(&dir).join(rel);
+                if p.exists() {
+                    return Some(p);
+                }
+            }
+        }
+    }
     None
 }
 
@@ -840,6 +871,31 @@ fn snapshot_url_with_chromium(url: &str, width: u32, height: u32) -> Option<Vec<
     bytes
 }
 
+/// Translate a guest `file://` URL (e.g. `file:///var/mobile/Applications/
+/// <uuid>/App.app/foo.html`) into a `file://` URL pointing at the
+/// corresponding file on the host, using the emulator's filesystem mapping.
+/// Returns the input unchanged when it can't be mapped, so relative
+/// resources (CSS/images next to the HTML) keep working.
+fn map_guest_file_url(env: &Environment, url: &str) -> String {
+    let Some(rest) = url.strip_prefix("file://") else {
+        return url.to_string();
+    };
+    // `file://localhost/...` is a legal file URL spelling; drop the host.
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    let guest_path = rest.trim_start_matches('/');
+    let Some(host) = env.fs.host_path_of(GuestPath::new(guest_path)) else {
+        return url.to_string();
+    };
+    // Chromium needs a proper `file:///` URL; on Windows that means
+    // `file:///C:/...` with forward slashes.
+    let host_str = host.display().to_string().replace('\\', "/");
+    if url.starts_with("file:///") {
+        format!("file:///{}", host_str.trim_start_matches('/'))
+    } else {
+        format!("file://{}", host_str)
+    }
+}
+
 /// Snapshot `url` and install the decoded PNG as the UIWebView's
 /// `layer.contents` so the user sees the rendered web page.
 fn render_url_to_layer(env: &mut Environment, this: id, url: &str, frame: CGRect) {
@@ -856,6 +912,15 @@ fn render_url_to_layer(env: &mut Environment, this: id, url: &str, frame: CGRect
     {
         return;
     }
+    // Guest file URLs point into the emulated iPhone OS filesystem; the host
+    // browser can only load the real host path, so translate first.
+    let mapped;
+    let url: &str = if url.starts_with("file://") {
+        mapped = map_guest_file_url(env, url);
+        &mapped
+    } else {
+        url
+    };
     let width = (frame.size.width.max(1.0) as u32).max(1);
     let height = (frame.size.height.max(1.0) as u32).max(1);
     let Some(png) = snapshot_url_with_chromium(url, width, height) else {

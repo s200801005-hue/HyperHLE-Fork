@@ -1416,7 +1416,22 @@ impl Fs {
         }
     }
 
-    // ИСПРАВЛ��НИЕ: ЧЕСТНАЯ РЕАЛИЗАЦИЯ ПЕРЕИМЕНОВАНИЯ
+    /// Map a guest path to the underlying file on the host, if the node is
+    /// backed by a real host file. Returns `None` for `.ipa` archive members
+    /// and touchHLE resource files, which have no single host path, and for
+    /// directories. Used e.g. by `UIWebView`'s desktop bridge to point a host
+    /// browser at an app-bundle file.
+    pub fn host_path_of<P: AsRef<GuestPath>>(&self, path: P) -> Option<&Path> {
+        match self.lookup_node(path.as_ref())? {
+            FsNode::File {
+                location: FileLocation::Path(host_path),
+                ..
+            } => Some(host_path.as_path()),
+            _ => None,
+        }
+    }
+
+    // ИСПРАВЛЕНИЕ: ЧЕСТНАЯ РЕАЛИЗАЦИЯ ПЕРЕИМЕНОВАНИЯ
     // Поддерживает и файлы, и директории, обновляет дерево VFS без паники
     pub fn rename<P: AsRef<GuestPath> + Copy>(&mut self, from: P, to: P) -> Result<(), ()> {
         let from_path = from.as_ref();

@@ -61,6 +61,9 @@ pub(crate) struct UIViewControllerHostObject {
     /// Lazily-created `UITabBarItem` returned by `-tabBarItem`, or `nil`.
     /// Retained while it lives in this slot.
     tab_bar_item: id,
+    /// `-toolbarItems` (`NSArray*` of `UIBarButtonItem*`) as set by the app,
+    /// or `nil`. Retained while it lives in this slot.
+    toolbar_items: id,
     // ---------------------------
     modal_transition_style: UIModalTransitionStyle,
     modal_presentation_style: UIModalPresentationStyle,
@@ -98,6 +101,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let mut host_object = Box::<UIViewControllerHostObject>::default();
     host_object.edges_for_extended_layout = UI_RECT_EDGE_ALL;
     host_object.tab_bar_item = crate::objc::nil;
+    host_object.toolbar_items = crate::objc::nil;
     env.objc.alloc_object(this, host_object, &mut env.mem)
 }
 
@@ -216,13 +220,14 @@ pub const CLASSES: ClassExports = objc_classes! {
     if presented != nil { release(env, presented); }
     // presenting_view_controller is a non-retained back-pointer; do not
     // release.
-    let (navigation_item, refresh_control, tab_bar_item) = {
+    let (navigation_item, refresh_control, tab_bar_item, toolbar_items) = {
         let h = env.objc.borrow::<UIViewControllerHostObject>(this);
-        (h.navigation_item, h.refresh_control, h.tab_bar_item)
+        (h.navigation_item, h.refresh_control, h.tab_bar_item, h.toolbar_items)
     };
     if navigation_item != nil { release(env, navigation_item); }
     if refresh_control != nil { release(env, refresh_control); }
     if tab_bar_item != nil { release(env, tab_bar_item); }
+    if toolbar_items != nil { release(env, toolbar_items); }
     if storyboard != nil { release(env, storyboard); }
 
     env.objc.dealloc_object(this, &mut env.mem);
@@ -421,6 +426,27 @@ pub const CLASSES: ClassExports = objc_classes! {
         retain(env, title);
     }
     env.objc.borrow_mut::<UIViewControllerHostObject>(this).title = title;
+}
+
+- (())setToolbarItems:(id)items { // NSArray* of UIBarButtonItem*
+    // Apple docs: the items are displayed in the toolbar of the containing
+    // navigation controller (if it has one and its toolbar is visible).
+    // touchHLE stores them for round-tripping only.
+    let old = env.objc.borrow::<UIViewControllerHostObject>(this).toolbar_items;
+    if old != nil {
+        release(env, old);
+    }
+    if items != nil {
+        retain(env, items);
+    }
+    env.objc.borrow_mut::<UIViewControllerHostObject>(this).toolbar_items = items;
+}
+- (())setToolbarItems:(id)items animated:(bool)_animated {
+    // Animation is ignored; delegate to the plain setter.
+    () = msg![env; this setToolbarItems:items];
+}
+- (id)toolbarItems { // NSArray*
+    env.objc.borrow::<UIViewControllerHostObject>(this).toolbar_items
 }
 
 - (())setEditing:(bool)editing {
