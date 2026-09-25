@@ -243,7 +243,6 @@ destructiveButtonTitle:(id)destructive_title // NSString*
 - (())showFromBarButtonItem:(id)_item animated:(bool)_animated {
     () = msg![env; this showInView:nil];}
 
-- (())showFromRect:(id)_rect inView:(id)_view animated:(bool)_animated {
 - (())showFromRect:(CGRect)_rect inView:(id)view animated:(bool)_animated {
     () = msg![env; this showInView:view];}
 
@@ -258,7 +257,7 @@ destructiveButtonTitle:(id)destructive_title // NSString*
     () = msg![env; overlay removeFromSuperview];
     release(env, overlay);
     if delegate == nil {
-`       release(env, this);
+        release(env, this);
         return;
     }
 

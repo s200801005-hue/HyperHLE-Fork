@@ -966,14 +966,15 @@ unsafe fn composite_layer_recursive(
             opacity,
         )
     }
-}
 
+    // Restore the ancestor clipping region now that the subtree is drawn.
     if let Some((enabled, old)) = saved_clip {
         let mut gles = env.window.as_mut().unwrap().make_internal_gl_ctx_current();
         gles.Scissor(old[0], old[1], old[2], old[3]);
         if !enabled { gles.Disable(gles11::SCISSOR_TEST); }
     }
-    
+}
+
 const FLOATS_PER_POINT: usize = 2;
 const BASIC_SQUARE_POINTS: [f32; 4 * FLOATS_PER_POINT] = [0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 0.0];
 const SQUARE_INDICES: [u8; 6] = [0, 1, 2, 2, 1, 3];
