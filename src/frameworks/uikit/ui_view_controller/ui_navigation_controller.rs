@@ -412,7 +412,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     let _: () = msg![env; this pushViewController:last_vc animated:animated];
 }
 
-(())_touchHLELayoutNavigation {
+- (())_touchHLELayoutNavigation {
     let host = env.objc.borrow_mut::<UINavigationControllerHostObject>(this);
     if host.laying_out { return; }
     host.laying_out = true;

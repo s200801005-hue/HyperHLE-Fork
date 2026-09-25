@@ -40,7 +40,6 @@ enum GestureKind {
 
 pub(super) struct UIGestureRecognizerHostObject {
     // UIKit does not retain targets, delegates or the associated view.
-    target: id,
     targets: Vec<(id, SEL)>,
     // Retained relationships, matching PR #95; not yet arbitrated.
     require_to_fail: Vec<id>,
@@ -383,43 +382,7 @@ pub const CLASSES: ClassExports = objc_classes! {
     env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).number_of_touches_required = value;
 }
 
-@implementation UILongPressGestureRecognizer: UIGestureRecognizer
-
-+ (id)allocWithZone:(NSZonePtr)_zone {
-    let mut host = Box::<UIGestureRecognizerHostObject>::default();
-    host.number_of_taps_required = 0;
-    env.objc.alloc_object(this, host, &mut env.mem)
-}
-
-- (f64)minimumPressDuration {
-    env.objc.borrow::<UIGestureRecognizerHostObject>(this).minimum_press_duration
-}
-- (())setMinimumPressDuration:(f64)value {
-    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).minimum_press_duration = value;
-}
-- (CGFloat)allowableMovement {
-    env.objc.borrow::<UIGestureRecognizerHostObject>(this).allowable_movement
-}
-- (())setAllowableMovement:(CGFloat)value {
-    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).allowable_movement = value;
-}
-- (NSUInteger)numberOfTapsRequired {
-    env.objc.borrow::<UIGestureRecognizerHostObject>(this).number_of_taps_required
-}
-- (())setNumberOfTapsRequired:(NSUInteger)value {
-    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).number_of_taps_required = value;
-}
-- (NSUInteger)numberOfTouchesRequired {
-    env.objc.borrow::<UIGestureRecognizerHostObject>(this).number_of_touches_required
-}
-- (())setNumberOfTouchesRequired:(NSUInteger)value {
-    env.objc.borrow_mut::<UIGestureRecognizerHostObject>(this).number_of_touches_required = value;
-}
-
 @end
-
-@end
-
 
 @implementation UISwipeGestureRecognizer: UIGestureRecognizer
 
@@ -672,7 +635,7 @@ fn cancel_long_press(env: &mut Environment, recognizer: id) {
     h.previous_tap = None;
     h.press_started = None;
     h.tracking = false;
-    if active { send_action(env, recognizer); }
+    if active { fire_targets(env, recognizer); }
     release(env, recognizer);
 }
 
@@ -701,7 +664,7 @@ fn long_press_timer(env: &mut Environment, recognizer: id, timer: id) {
     let cancel = h.cancels_touches_in_view;
     let touches: Vec<id> = h.active_touches.keys().copied().collect();
     if cancel { super::ui_touch::cancel_for_gesture(env, &touches); }
-    send_action(env, recognizer);
+    fire_targets(env, recognizer);
 }
 
 fn long_press_touches(env: &mut Environment, recognizer: id, touches: id, phase: u8) {
@@ -759,10 +722,10 @@ fn long_press_touches_inner(env: &mut Environment, recognizer: id, touches: id, 
         h.tracking = false;
         h.state = if active { 3 } else { 5 };
         stop_press_timer(env, recognizer);
-        if active { send_action(env, recognizer); }
+        if active { fire_targets(env, recognizer); }
     } else if active && phase == 1 {
         h.state = 2; // Changed
-        send_action(env, recognizer);
+        fire_targets(env, recognizer);
     } else if h.state == 0 && h.tracking && h.press_timer == nil && n == h.number_of_touches_required as usize
         && h.completed_taps == h.number_of_taps_required {
         let duration = h.minimum_press_duration;
